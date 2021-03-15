@@ -33,7 +33,7 @@ DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
 else
 DTB_LIST := $(dtb-y)
 endif
-DTB_OBJS := $(shell find $(obj)/dts/ -name \*.dtb)
+DTB_OBJS := $(addprefix $(obj)/dts/,$(DTB_LIST))
 
 ifeq ($(CONFIG_XIP_KERNEL),y)
 
