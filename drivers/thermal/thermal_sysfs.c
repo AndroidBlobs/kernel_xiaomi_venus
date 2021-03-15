@@ -980,8 +980,10 @@ void thermal_cooling_device_stats_update(struct thermal_cooling_device *cdev,
 {
 	struct cooling_dev_stats *stats = cdev->stats;
 
+#ifdef CONFIG_QTI_THERMAL
 	if (!stats)
 		return;
+#endif
 
 	spin_lock(&stats->lock);
 
