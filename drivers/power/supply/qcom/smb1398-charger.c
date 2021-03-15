@@ -180,9 +180,6 @@
 #define PERPH0_CFG_SDCDC_REG		0x267A
 #define EN_WIN_UV_BIT			BIT(7)
 
-#define PERPH0_SOVP_CFG0_REG		0x2680
-#define CFG_OVP_IGNORE_UVLO		BIT(5)
-
 #define PERPH0_SSUPPLY_CFG0_REG		0x2682
 #define EN_HV_OV_OPTION2_BIT		BIT(7)
 #define EN_MV_OV_OPTION2_BIT		BIT(5)
@@ -311,7 +308,6 @@ struct smb1398_chip {
 	struct power_supply	*pre_regulator_psy;
 	struct power_supply	*batt_psy;
 	struct power_supply	*dc_psy;
-	struct power_supply	*usb_psy;
 	struct notifier_block	nb;
 
 	struct votable		*awake_votable;
@@ -359,7 +355,6 @@ struct smb1398_chip {
 	bool			slave_en;
 	bool			in_suspend;
 	bool			disabled;
-	bool			usb_present;
 };
 
 struct cp_iio_prop_channels {
@@ -437,7 +432,7 @@ enum smb5_iio_channels {
 };
 
 static const char * const cp_slave_iio_chans[] = {
-	[CURRENT_CAPABILITY] = "cp_current_capability",
+	[CURRENT_CAPABILITY] = "current_capability",
 	[CP_ENABLE] = "cp_enable",
 	[CP_INPUT_CURRENT_MAX] = "cp_input_current_max",
 };
@@ -1049,23 +1044,6 @@ static char *div2_cp_get_model_name(struct smb1398_chip *chip)
 		return "SMB1398_V1";
 }
 
-static int smb1398_toggle_uvlo(struct smb1398_chip *chip)
-{
-	int rc;
-
-	rc = smb1398_masked_write(chip, PERPH0_SOVP_CFG0_REG,
-				CFG_OVP_IGNORE_UVLO, CFG_OVP_IGNORE_UVLO);
-	if (rc < 0)
-		dev_err(chip->dev, "Couldn't write IGNORE_UVLO rc=%d\n", rc);
-
-	rc = smb1398_masked_write(chip, PERPH0_SOVP_CFG0_REG,
-				CFG_OVP_IGNORE_UVLO, 0);
-	if (rc < 0)
-		dev_err(chip->dev, "Couldn't write IGNORE_UVLO, rc=%d\n", rc);
-
-	return rc;
-}
-
 static enum power_supply_property div2_cp_master_props[] = {
 	POWER_SUPPLY_PROP_MODEL_NAME,
 };
@@ -1123,14 +1101,6 @@ static bool is_psy_voter_available(struct smb1398_chip *chip)
 		chip->batt_psy = power_supply_get_by_name("battery");
 		if (!chip->batt_psy) {
 			dev_dbg(chip->dev, "Couldn't find battery psy\n");
-			return false;
-		}
-	}
-
-	if (!chip->usb_psy) {
-		chip->usb_psy = power_supply_get_by_name("usb");
-		if (!chip->usb_psy) {
-			dev_dbg(chip->dev, "Couldn't find usb psy\n");
 			return false;
 		}
 	}
@@ -1619,20 +1589,6 @@ static void smb1398_status_change_work(struct work_struct *work)
 	 */
 	if (!is_cutoff_soc_reached(chip))
 		vote(chip->div2_cp_disable_votable, CUTOFF_SOC_VOTER, false, 0);
-
-	rc = power_supply_get_property(chip->usb_psy,
-			POWER_SUPPLY_PROP_PRESENT, &pval);
-	if (rc < 0) {
-		dev_err(chip->dev,
-			"Couldn't get USB PRESENT status, rc=%d\n", rc);
-		goto out;
-	}
-
-	if (chip->usb_present != !!pval.intval) {
-		chip->usb_present = !!pval.intval;
-		if (!chip->usb_present) /* USB has been removed */
-			smb1398_toggle_uvlo(chip);
-	}
 
 	rc = cp_read_iio_prop(chip, QPNP_SMB5, SMB_EN_MODE, &val);
 	if (rc < 0) {
@@ -2494,6 +2450,8 @@ static const struct cp_iio_prop_channels cp_master_chans[] = {
 static int cp_master_iio_set_prop(struct smb1398_chip *chip,
 	int channel, int val)
 {
+	int rc = 0;
+
 	switch (channel) {
 	case PSY_IIO_CP_ENABLE:
 		vote(chip->div2_cp_disable_votable,
@@ -2513,7 +2471,8 @@ static int cp_master_iio_set_prop(struct smb1398_chip *chip,
 		break;
 	default:
 		pr_err("get prop %d is not supported\n", channel);
-		return -EINVAL;
+		rc = -EINVAL;
+		break;
 	}
 
 	return 0;
@@ -2567,11 +2526,11 @@ static int cp_master_iio_get_prop(struct smb1398_chip *chip,
 	 * Return the cached values when the system is in suspend state
 	 * instead of reading the registers to avoid read failures.
 	 */
+
 	if (chip->in_suspend) {
 		rc = cp_master_iio_get_prop_in_suspend(chip, channel, val);
 		if (!rc)
-			return IIO_VAL_INT;
-		rc = 0;
+			return rc;
 	}
 
 	switch (channel) {
@@ -2738,6 +2697,8 @@ static int cp_slave_iio_set_prop(struct smb1398_chip *chip,
 static int cp_slave_iio_get_prop(struct smb1398_chip *chip,
 	int channel, int *val)
 {
+	int rc = 0;
+
 	switch (channel) {
 	case PSY_IIO_CP_ENABLE:
 		*val = chip->switcher_en;
@@ -2755,7 +2716,8 @@ static int cp_slave_iio_get_prop(struct smb1398_chip *chip,
 		break;
 	default:
 		pr_err("get prop %d is not supported\n", channel);
-		return -EINVAL;
+		rc = -EINVAL;
+		break;
 	}
 
 	return IIO_VAL_INT;
@@ -3012,10 +2974,6 @@ static void smb1398_shutdown(struct platform_device *pdev)
 	rc = smb1398_div2_cp_switcher_en(chip, 0);
 	if (rc < 0)
 		dev_err(chip->dev, "Couldn't disable chip rc= %d\n", rc);
-
-	rc = smb1398_toggle_uvlo(chip);
-	if (rc < 0)
-		dev_err(chip->dev, "Couldn't toggle uvlo rc= %d\n", rc);
 }
 
 static const struct dev_pm_ops smb1398_pm_ops = {

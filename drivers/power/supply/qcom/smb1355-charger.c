@@ -144,13 +144,6 @@
 #define MISC_CHGR_TRIM_OPTIONS_REG		(MISC_BASE + 0x55)
 #define CMD_RBIAS_EN_BIT			BIT(2)
 
-#define MISC_ENG_SDCDC_RESERVE1_REG		(MISC_BASE + 0xC4)
-#define MINOFF_TIME_MASK			BIT(6)
-
-#define MISC_ENG_SDCDC_CFG8_REG			(MISC_BASE + 0xC7)
-#define DEAD_TIME_MASK				GENMASK(2, 0)
-#define DEAD_TIME_32NS				0x4
-
 #define MISC_ENG_SDCDC_INPUT_CURRENT_CFG1_REG	(MISC_BASE + 0xC8)
 #define PROLONG_ISENSE_MASK			GENMASK(7, 6)
 #define PROLONG_ISENSEM_SHIFT			6
@@ -679,8 +672,9 @@ done:
 	return rc;
 }
 
-static int smb1355_get_prop_constant_charge_current_max(struct smb1355 *chip,
-							int *val)
+static int smb1355_get_prop_constant_charge_current_max(
+					struct smb1355 *chip,
+					int *val)
 {
 	int rc = 0;
 
@@ -1044,18 +1038,18 @@ static int smb1355_iio_read_raw(struct iio_dev *indio_dev,
 		*val1 = 0;
 		break;
 	default:
-		pr_err_ratelimited("SMB1355 IIO channel %x not supported\n",
+		pr_err_ratelimited("SMB1355 IIO channel %d not supported\n",
 			chan->channel);
 		return -EINVAL;
 	}
 
 	if (rc < 0) {
-		pr_debug("Couldn't read channel %x rc = %d\n",
+		pr_debug("Couldn't read channel %d rc = %d\n",
 				chan->channel, rc);
 		return -ENODATA;
 	}
 
-	return IIO_VAL_INT;
+	return rc ? rc : IIO_VAL_INT;
 }
 
 static int smb1355_iio_write_raw(struct iio_dev *indio_dev,
@@ -1099,12 +1093,10 @@ static int smb1355_iio_write_raw(struct iio_dev *indio_dev,
 		rc = smb1355_clk_request(chip, false);
 		break;
 	default:
+		pr_debug("SMB1355 IIO write channel %d not supported\n",
+				chan->channel);
 		rc = -EINVAL;
 	}
-
-	if (rc < 0)
-		pr_debug("Couldn't write to channel %x rc = %d\n",
-				chan->channel, rc);
 done:
 	mutex_unlock(&chip->suspend_lock);
 	return rc;
@@ -1387,22 +1379,6 @@ static int smb1355_init_hw(struct smb1355 *chip)
 	if (rc < 0) {
 		pr_err("Couldn't set PRE_TO_FAST_CHARGE_THRESHOLD rc=%d\n",
 			rc);
-		return rc;
-	}
-
-	/* Extend min-offtime same as blanking time */
-	rc = smb1355_masked_write(chip, MISC_ENG_SDCDC_RESERVE1_REG,
-						MINOFF_TIME_MASK, 0);
-	if (rc < 0) {
-		pr_err("Couldn't set MINOFF_TIME rc=%d\n", rc);
-		return rc;
-	}
-
-	/* Set dead-time to 32ns */
-	rc = smb1355_masked_write(chip, MISC_ENG_SDCDC_CFG8_REG,
-					DEAD_TIME_MASK, DEAD_TIME_32NS);
-	if (rc < 0) {
-		pr_err("Couldn't set DEAD_TIME to 32ns rc=%d\n", rc);
 		return rc;
 	}
 
