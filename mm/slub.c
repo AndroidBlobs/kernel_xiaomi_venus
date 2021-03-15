@@ -4424,7 +4424,6 @@ void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
 
 	return ret;
 }
-EXPORT_SYMBOL(__kmalloc_track_caller);
 
 #ifdef CONFIG_NUMA
 void *__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
@@ -4455,7 +4454,6 @@ void *__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
 
 	return ret;
 }
-EXPORT_SYMBOL(__kmalloc_node_track_caller);
 #endif
 
 #ifdef CONFIG_SYSFS
@@ -4570,9 +4568,6 @@ struct location {
 	long max_pid;
 	DECLARE_BITMAP(cpus, NR_CPUS);
 	nodemask_t nodes;
-#ifdef CONFIG_STACKTRACE
-	unsigned long addrs[TRACK_ADDRS_COUNT]; /* Called from address */
-#endif
 };
 
 struct loc_track {
@@ -4615,7 +4610,6 @@ static int add_location(struct loc_track *t, struct kmem_cache *s,
 	struct location *l;
 	unsigned long caddr;
 	unsigned long age = jiffies - track->when;
-	unsigned int i = 0;
 
 	start = -1;
 	end = t->count;
@@ -4673,15 +4667,6 @@ static int add_location(struct loc_track *t, struct kmem_cache *s,
 	t->count++;
 	l->count = 1;
 	l->addr = track->addr;
-#ifdef CONFIG_STACKTRACE
-	for (i = 0; i < TRACK_ADDRS_COUNT; i++)
-		if (l->addrs[i]) {
-			l->addrs[i] = track->addrs[i];
-			continue;
-		} else
-			break;
-
-#endif
 	l->sum_time = age;
 	l->min_time = age;
 	l->max_time = age;
@@ -6141,19 +6126,10 @@ static int alloc_trace_locations(struct seq_file *seq, struct kmem_cache *s,
 
 	for (i = 0; i < t.count; i++) {
 		struct location *l = &t.loc[i];
-		unsigned int j = 0;
 
 		seq_printf(seq,
 		"alloc_list: call_site=%pS count=%zu object_size=%zu slab_size=%zu slab_name=%s\n",
-			(void *)l->addr, l->count, s->object_size, s->size, s->name);
-#ifdef CONFIG_STACKTRACE
-		for (j = 0; j < TRACK_ADDRS_COUNT; j++)
-			if (l->addrs[j]) {
-				seq_printf(seq, "%pS\n", l->addrs[j]);
-				continue;
-			} else
-				break;
-#endif
+			l->addr, l->count, s->object_size, s->size, s->name);
 	}
 
 	free_loc_track(&t);
@@ -6323,9 +6299,16 @@ static int __init slab_sysfs_init(void)
 #ifdef CONFIG_SLUB_DEBUG
 	if (slub_debug) {
 		slab_debugfs_top = debugfs_create_dir("slab", NULL);
-		if (!IS_ERR(slab_debugfs_top))
-			debugfs_create_file("alloc_trace", 0400, slab_debugfs_top,
-					NULL, &slab_debug_alloc_fops);
+		if (!slab_debugfs_top) {
+			pr_err("Couldn't create slab debugfs directory\n");
+			return -ENODEV;
+		}
+
+		if (!debugfs_create_file("alloc_trace", 0400, slab_debugfs_top,
+					NULL, &slab_debug_alloc_fops)) {
+			pr_err("Couldn't create slab/tests debugfs directory\n");
+			return -ENODEV;
+		}
 	}
 #endif
 
