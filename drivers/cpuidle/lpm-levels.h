@@ -69,6 +69,7 @@ struct lpm_cpu {
 	uint64_t bias;
 	struct cpuidle_driver *drv;
 	struct lpm_cluster *parent;
+	ktime_t next_hrtimer;
 };
 
 struct lpm_level_avail {
