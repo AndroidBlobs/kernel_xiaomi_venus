@@ -3,6 +3,7 @@
  *
  * This code is based on drivers/scsi/ufs/ufshcd.h
  * Copyright (C) 2011-2013 Samsung India Software Operations
+ * Copyright (C) 2020 XiaoMi, Inc.
  * Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
  *
  * Authors:
@@ -84,6 +85,30 @@ enum dev_cmd_type {
 	DEV_CMD_TYPE_NOP		= 0x0,
 	DEV_CMD_TYPE_QUERY		= 0x1,
 };
+
+#define ufs_spin_lock_irqsave(lock, flags)				\
+do {	\
+	if (!oops_in_progress)\
+		spin_lock_irqsave(lock, flags);	\
+} while (0)
+
+#define ufs_spin_unlock_irqrestore(lock, flags)				\
+do {	\
+	if (!oops_in_progress)\
+		spin_unlock_irqrestore(lock, flags);	\
+} while (0)
+
+#define ufs_spin_lock(lock)				\
+do {	\
+	if (!oops_in_progress)\
+		spin_lock(lock);	\
+} while (0)
+
+#define ufs_spin_unlock(lock)				\
+do {	\
+	if (!oops_in_progress)\
+		spin_unlock(lock);	\
+} while (0)
 
 /**
  * struct uic_command - UIC command structure
@@ -389,6 +414,7 @@ struct ufs_hba_variant_ops {
 	void	(*config_scaling_param)(struct ufs_hba *hba,
 					struct devfreq_dev_profile *profile,
 					void *data);
+
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
@@ -995,7 +1021,6 @@ struct ufs_hba {
 	u32 limit_rx_hs_gear;
 	u32 limit_tx_pwm_gear;
 	u32 limit_rx_pwm_gear;
-	u32 limit_phy_submode;
 	bool restore_needed;
 	u32 scsi_cmd_timeout;
 	bool auto_h8_err;
