@@ -6,7 +6,6 @@
  */
 
 #include <linux/gfp.h>
-#include <linux/hardirq.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
@@ -247,36 +246,33 @@ static inline cfi_check_fn ptr_to_check_fn(const struct cfi_shadow __rcu *s,
 
 static inline cfi_check_fn find_module_cfi_check(void *ptr)
 {
-	cfi_check_fn f = CFI_CHECK_FN;
 	struct module *mod;
 
 	preempt_disable();
 	mod = __module_address((unsigned long)ptr);
-	if (mod)
-		f = mod->cfi_check;
 	preempt_enable();
 
-	return f;
+	if (mod)
+		return mod->cfi_check;
+
+	return CFI_CHECK_FN;
 }
 
 static inline cfi_check_fn find_cfi_check(void *ptr)
 {
-	bool rcu;
+#ifdef CONFIG_CFI_CLANG_SHADOW
 	cfi_check_fn f;
 
-	rcu = rcu_is_watching();
-	if (!rcu)
-		rcu_nmi_enter();
+	if (!rcu_access_pointer(cfi_shadow))
+		return CFI_CHECK_FN; /* No loaded modules */
 
-#ifdef CONFIG_CFI_CLANG_SHADOW
 	/* Look up the __cfi_check function to use */
-	rcu_read_lock_sched();
-	f = ptr_to_check_fn(rcu_dereference_sched(cfi_shadow),
-			    (unsigned long)ptr);
-	rcu_read_unlock_sched();
+	rcu_read_lock();
+	f = ptr_to_check_fn(rcu_dereference(cfi_shadow), (unsigned long)ptr);
+	rcu_read_unlock();
 
 	if (f)
-		goto out;
+		return f;
 
 	/*
 	 * Fall back to find_module_cfi_check, which works also for a larger
@@ -284,13 +280,7 @@ static inline cfi_check_fn find_cfi_check(void *ptr)
 	 */
 #endif /* CONFIG_CFI_CLANG_SHADOW */
 
-	f = find_module_cfi_check(ptr);
-
-out:
-	if (!rcu)
-		rcu_nmi_exit();
-
-	return f;
+	return find_module_cfi_check(ptr);
 }
 
 void cfi_slowpath_handler(uint64_t id, void *ptr, void *diag)

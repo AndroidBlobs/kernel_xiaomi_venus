@@ -44,7 +44,6 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(pelt_se_tp);
 EXPORT_TRACEPOINT_SYMBOL_GPL(sched_overutilized_tp);
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
-EXPORT_SYMBOL_GPL(runqueues);
 
 #if defined(CONFIG_SCHED_DEBUG) && defined(CONFIG_JUMP_LABEL)
 /*
@@ -1540,7 +1539,6 @@ static struct rq *move_queued_task(struct rq *rq, struct rq_flags *rf,
 
 	WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
 	dequeue_task(rq, p, DEQUEUE_NOCLOCK);
-	rq_unpin_lock(rq, rf);
 	double_lock_balance(rq, cpu_rq(new_cpu));
 	if (!(rq->clock_update_flags & RQCF_UPDATED))
 		update_rq_clock(rq);
@@ -2828,7 +2826,6 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->wts.boost_expires		= 0;
 	p->wts.boost_period		= 0;
 	p->wts.low_latency		= 0;
-	p->wts.iowaited			= false;
 #endif
 	INIT_LIST_HEAD(&p->se.group_node);
 
@@ -7051,9 +7048,7 @@ void __init sched_init(void)
 
 	init_uclamp();
 
-#ifdef CONFIG_CGROUP_SCHED
 	walt_init_sched_boost(&root_task_group);
-#endif
 
 	scheduler_running = 1;
 }

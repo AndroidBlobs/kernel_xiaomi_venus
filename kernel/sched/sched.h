@@ -3004,7 +3004,6 @@ static inline struct walt_related_thread_group
 	return rcu_dereference(p->wts.grp);
 }
 
-/* applying the task threshold for all types of low latency tasks. */
 static inline bool walt_low_latency_task(struct task_struct *p)
 {
 	return p->wts.low_latency &&
@@ -3057,21 +3056,14 @@ extern struct walt_sched_cluster *rq_cluster(struct rq *rq);
 #ifdef CONFIG_UCLAMP_TASK_GROUP
 static inline bool task_sched_boost(struct task_struct *p)
 {
-	struct cgroup_subsys_state *css;
+	struct cgroup_subsys_state *css = task_css(p, cpu_cgrp_id);
 	struct task_group *tg;
-	bool sched_boost_enabled;
 
-	rcu_read_lock();
-	css = task_css(p, cpu_cgrp_id);
-	if (!css) {
-		rcu_read_unlock();
+	if (!css)
 		return false;
-	}
 	tg = container_of(css, struct task_group, css);
-	sched_boost_enabled = tg->wtg.sched_boost_enabled;
-	rcu_read_unlock();
 
-	return sched_boost_enabled;
+	return tg->wtg.sched_boost_enabled;
 }
 
 extern int sync_cgroup_colocation(struct task_struct *p, bool insert);
@@ -3141,20 +3133,17 @@ void note_task_waking(struct task_struct *p, u64 wallclock);
 
 static inline bool task_placement_boost_enabled(struct task_struct *p)
 {
-	if (likely(sched_boost_policy() == SCHED_BOOST_NONE))
-		return false;
+	if (task_sched_boost(p))
+		return sched_boost_policy() != SCHED_BOOST_NONE;
 
-	return task_sched_boost(p);
+	return false;
 }
 
 static inline enum sched_boost_policy task_boost_policy(struct task_struct *p)
 {
-	enum sched_boost_policy policy;
-
-	if (likely(sched_boost_policy() == SCHED_BOOST_NONE))
-		return SCHED_BOOST_NONE;
-
-	policy = task_sched_boost(p) ? sched_boost_policy() : SCHED_BOOST_NONE;
+	enum sched_boost_policy policy = task_sched_boost(p) ?
+						sched_boost_policy() :
+						SCHED_BOOST_NONE;
 	if (policy == SCHED_BOOST_ON_BIG) {
 		/*
 		 * Filter out tasks less than min task util threshold
@@ -3368,19 +3357,4 @@ extern void dequeue_task_core(struct rq *rq, struct task_struct *p, int flags);
 extern void walt_init_sched_boost(struct task_group *tg);
 #else
 static inline void walt_init_sched_boost(struct task_group *tg) {}
-#endif
-
-#ifdef CONFIG_SCHED_WALT
-static inline void walt_irq_work_queue(struct irq_work *work)
-{
-	if (likely(cpu_online(raw_smp_processor_id())))
-		irq_work_queue(work);
-	else
-		irq_work_queue_on(work, cpumask_any(cpu_online_mask));
-}
-#else
-static inline void walt_irq_work_queue(struct irq_work *work)
-{
-	irq_work_queue(work);
-}
 #endif
