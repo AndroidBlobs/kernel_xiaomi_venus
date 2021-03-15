@@ -788,11 +788,6 @@ ctnetlink_conntrack_event(unsigned int events, struct nf_ct_event *item)
 
 		if (events & (1 << IPCT_SYNPROXY) &&
 		    ctnetlink_dump_ct_synproxy(skb, ct) < 0)
-
-#ifdef CONFIG_ENABLE_SFE
-		if (events & (1 << IPCT_COUNTER) &&
-		    ctnetlink_dump_acct(skb, ct, 0) < 0)
-#endif
 			goto nla_put_failure;
 	}
 
@@ -1708,7 +1703,7 @@ static int ctnetlink_change_timeout(struct nf_conn *ct,
 #if defined(CONFIG_IP_NF_TARGET_NATTYPE_MODULE)
 	nattype_ref_timer = rcu_dereference(nattype_refresh_timer);
 	if (nattype_ref_timer)
-		nattype_ref_timer(ct->nattype_entry, ct->timeout);
+		nattype_ref_timer(ct->nattype_entry, ct->timeout.expires);
 #endif
 	return 0;
 }

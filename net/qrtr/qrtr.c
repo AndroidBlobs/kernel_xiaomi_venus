@@ -117,7 +117,6 @@ static inline struct qrtr_sock *qrtr_sk(struct sock *sk)
 }
 
 static unsigned int qrtr_local_nid = CONFIG_QRTR_NODE_ID;
-static unsigned int qrtr_wakeup_ms = CONFIG_QRTR_WAKEUP_MS;
 
 /* for node ids */
 static RADIX_TREE(qrtr_nodes, GFP_ATOMIC);
@@ -130,15 +129,6 @@ static DECLARE_RWSEM(qrtr_epts_lock);
 /* local port allocation management */
 static DEFINE_IDR(qrtr_ports);
 static DEFINE_SPINLOCK(qrtr_port_lock);
-
-/* backup buffers */
-#define QRTR_BACKUP_HI_NUM	5
-#define QRTR_BACKUP_HI_SIZE	SZ_16K
-#define QRTR_BACKUP_LO_NUM	20
-#define QRTR_BACKUP_LO_SIZE	SZ_1K
-static struct sk_buff_head qrtr_backup_lo;
-static struct sk_buff_head qrtr_backup_hi;
-static struct work_struct qrtr_backup_work;
 
 /**
  * struct qrtr_node - endpoint node
@@ -726,59 +716,6 @@ int qrtr_peek_pkt_size(const void *data)
 }
 EXPORT_SYMBOL(qrtr_peek_pkt_size);
 
-static void qrtr_alloc_backup(struct work_struct *work)
-{
-	struct sk_buff *skb;
-	int errcode;
-
-	while (skb_queue_len(&qrtr_backup_lo) < QRTR_BACKUP_LO_NUM) {
-		skb = alloc_skb_with_frags(sizeof(struct qrtr_hdr_v1),
-					   QRTR_BACKUP_LO_SIZE, 0, &errcode,
-					   GFP_KERNEL);
-		if (!skb)
-			break;
-		skb_queue_tail(&qrtr_backup_lo, skb);
-	}
-	while (skb_queue_len(&qrtr_backup_hi) < QRTR_BACKUP_HI_NUM) {
-		skb = alloc_skb_with_frags(sizeof(struct qrtr_hdr_v1),
-					   QRTR_BACKUP_HI_SIZE, 0, &errcode,
-					   GFP_KERNEL);
-		if (!skb)
-			break;
-		skb_queue_tail(&qrtr_backup_hi, skb);
-	}
-}
-
-static struct sk_buff *qrtr_get_backup(size_t len)
-{
-	struct sk_buff *skb = NULL;
-
-	if (len < QRTR_BACKUP_LO_SIZE)
-		skb = skb_dequeue(&qrtr_backup_lo);
-	else if (len < QRTR_BACKUP_HI_SIZE)
-		skb = skb_dequeue(&qrtr_backup_hi);
-
-	if (skb)
-		queue_work(system_unbound_wq, &qrtr_backup_work);
-
-	return skb;
-}
-
-static void qrtr_backup_init(void)
-{
-	skb_queue_head_init(&qrtr_backup_lo);
-	skb_queue_head_init(&qrtr_backup_hi);
-	INIT_WORK(&qrtr_backup_work, qrtr_alloc_backup);
-	queue_work(system_unbound_wq, &qrtr_backup_work);
-}
-
-static void qrtr_backup_deinit(void)
-{
-	cancel_work_sync(&qrtr_backup_work);
-	skb_queue_purge(&qrtr_backup_lo);
-	skb_queue_purge(&qrtr_backup_hi);
-}
-
 /**
  * qrtr_endpoint_post() - post incoming data
  * @ep: endpoint handle
@@ -805,13 +742,8 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 		return -EINVAL;
 
 	skb = alloc_skb_with_frags(sizeof(*v1), len, 0, &errcode, GFP_ATOMIC);
-	if (!skb) {
-		skb = qrtr_get_backup(len);
-		if (!skb) {
-			pr_err("qrtr: Unable to get skb with len:%lu\n", len);
-			return -ENOMEM;
-		}
-	}
+	if (!skb)
+		return -ENOMEM;
 
 	skb_reserve(skb, sizeof(*v1));
 	cb = (struct qrtr_cb *)skb->cb;
@@ -887,20 +819,14 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	if (cb->type != QRTR_TYPE_DATA || cb->dst_node != qrtr_local_nid) {
 		skb_queue_tail(&node->rx_queue, skb);
 		kthread_queue_work(&node->kworker, &node->read_data);
-		pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
+		__pm_wakeup_event(node->ws, 0);
 	} else {
 		ipc = qrtr_port_lookup(cb->dst_port);
-		if (!ipc) {
-			kfree_skb(skb);
-			return -ENODEV;
-		}
+		if (!ipc)
+			goto err;
 
 		if (sock_queue_rcv_skb(&ipc->sk, skb))
 			goto err;
-
-		/* Force wakeup for all packets except for sensors */
-		if (node->nid != 9)
-			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
 
 		qrtr_port_put(ipc);
 	}
@@ -2005,8 +1931,6 @@ static int __init qrtr_proto_init(void)
 
 	qrtr_ns_init();
 
-	qrtr_backup_init();
-
 	return rc;
 }
 postcore_initcall(qrtr_proto_init);
@@ -2016,8 +1940,6 @@ static void __exit qrtr_proto_fini(void)
 	qrtr_ns_remove();
 	sock_unregister(qrtr_family.family);
 	proto_unregister(&qrtr_proto);
-
-	qrtr_backup_deinit();
 }
 module_exit(qrtr_proto_fini);
 

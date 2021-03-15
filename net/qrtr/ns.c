@@ -29,9 +29,8 @@ static struct {
 	struct socket *sock;
 	struct sockaddr_qrtr bcast_sq;
 	struct list_head lookups;
-	struct kthread_worker kworker;
-	struct kthread_work work;
-	struct task_struct *task;
+	struct workqueue_struct *workqueue;
+	struct work_struct work;
 	int local_node;
 } qrtr_ns;
 
@@ -629,7 +628,7 @@ static void ns_log_msg(const struct qrtr_ctrl_pkt *pkt,
 			le32_to_cpu(pkt->server.instance));
 }
 
-static void qrtr_ns_worker(struct kthread_work *work)
+static void qrtr_ns_worker(struct work_struct *work)
 {
 	const struct qrtr_ctrl_pkt *pkt;
 	size_t recv_buf_size = 4096;
@@ -725,7 +724,7 @@ static void qrtr_ns_worker(struct kthread_work *work)
 
 static void qrtr_ns_data_ready(struct sock *sk)
 {
-	kthread_queue_work(&qrtr_ns.kworker, &qrtr_ns.work);
+	queue_work(qrtr_ns.workqueue, &qrtr_ns.work);
 }
 
 void qrtr_ns_init(void)
@@ -735,8 +734,7 @@ void qrtr_ns_init(void)
 	int ret;
 
 	INIT_LIST_HEAD(&qrtr_ns.lookups);
-	kthread_init_worker(&qrtr_ns.kworker);
-	kthread_init_work(&qrtr_ns.work, qrtr_ns_worker);
+	INIT_WORK(&qrtr_ns.work, qrtr_ns_worker);
 
 	ns_ilc = ipc_log_context_create(NS_LOG_PAGE_CNT, "qrtr_ns", 0);
 
@@ -751,13 +749,9 @@ void qrtr_ns_init(void)
 		goto err_sock;
 	}
 
-	qrtr_ns.task = kthread_run(kthread_worker_fn, &qrtr_ns.kworker,
-				   "qrtr_ns");
-	if (IS_ERR(qrtr_ns.task)) {
-		pr_err("failed to spawn worker thread %ld\n",
-		       PTR_ERR(qrtr_ns.task));
+	qrtr_ns.workqueue = alloc_workqueue("qrtr_ns_handler", WQ_UNBOUND, 1);
+	if (!qrtr_ns.workqueue)
 		goto err_sock;
-	}
 
 	qrtr_ns.sock->sk->sk_data_ready = qrtr_ns_data_ready;
 
@@ -783,7 +777,7 @@ void qrtr_ns_init(void)
 	return;
 
 err_wq:
-	kthread_stop(qrtr_ns.task);
+	destroy_workqueue(qrtr_ns.workqueue);
 err_sock:
 	sock_release(qrtr_ns.sock);
 }
@@ -791,8 +785,8 @@ EXPORT_SYMBOL_GPL(qrtr_ns_init);
 
 void qrtr_ns_remove(void)
 {
-	kthread_flush_worker(&qrtr_ns.kworker);
-	kthread_stop(qrtr_ns.task);
+	cancel_work_sync(&qrtr_ns.work);
+	destroy_workqueue(qrtr_ns.workqueue);
 	sock_release(qrtr_ns.sock);
 }
 EXPORT_SYMBOL_GPL(qrtr_ns_remove);
