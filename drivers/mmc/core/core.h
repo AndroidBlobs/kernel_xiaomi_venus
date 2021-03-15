@@ -106,10 +106,6 @@ extern int mmc_resume_clk_scaling(struct mmc_host *host);
 extern int mmc_exit_clk_scaling(struct mmc_host *host);
 extern void mmc_deferred_scaling(struct mmc_host *host);
 extern unsigned long mmc_get_max_frequency(struct mmc_host *host);
-extern void mmc_cqe_clk_scaling_start_busy(struct mmc_queue *mq,
-	struct mmc_host *host, bool lock_needed);
-extern void mmc_cqe_clk_scaling_stop_busy(struct mmc_host *host,
-			bool lock_needed, bool is_cqe_dcmd);
 #endif
 int mmc_execute_tuning(struct mmc_card *card);
 int mmc_hs200_to_hs400(struct mmc_card *card);
@@ -143,10 +139,6 @@ int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen);
 
 int __mmc_claim_host(struct mmc_host *host, struct mmc_ctx *ctx,
 		     atomic_t *abort);
-#if defined(CONFIG_SDC_QTI)
-int mmc_try_claim_host(struct mmc_host *host, struct mmc_ctx *ctx,
-		unsigned int delay_ms);
-#endif
 void mmc_release_host(struct mmc_host *host);
 void mmc_get_card(struct mmc_card *card, struct mmc_ctx *ctx);
 void mmc_put_card(struct mmc_card *card, struct mmc_ctx *ctx);

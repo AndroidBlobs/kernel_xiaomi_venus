@@ -1206,21 +1206,7 @@ static void mmc_sd_detect(struct mmc_host *host)
 {
 	int err;
 
-#if defined(CONFIG_SDC_QTI)
-	/*
-	 * Try to acquire claim host. If failed to get the lock in 2 sec,
-	 * just return; This is to ensure that when this call is invoked
-	 * due to pm_suspend, not to block suspend for longer duration.
-	 */
-	pm_runtime_get_sync(&host->card->dev);
-	if (!mmc_try_claim_host(host, NULL, 2000)) {
-		pm_runtime_mark_last_busy(&host->card->dev);
-		pm_runtime_put_autosuspend(&host->card->dev);
-		return;
-	}
-#else
-	 mmc_get_card(host->card, NULL);
-#endif
+	mmc_get_card(host->card, NULL);
 
 	/*
 	 * Just check if our card has been removed.
@@ -1251,7 +1237,6 @@ static int _mmc_sd_suspend(struct mmc_host *host)
 	}
 #endif
 	mmc_claim_host(host);
-	mmc_log_string(host, "Enter\n");
 
 	if (mmc_card_suspended(host->card))
 		goto out;
@@ -1266,7 +1251,6 @@ static int _mmc_sd_suspend(struct mmc_host *host)
 
 out:
 	mmc_release_host(host);
-	mmc_log_string(host, "Exit err: %d\n", err);
 	return err;
 }
 
@@ -1295,7 +1279,6 @@ static int _mmc_sd_resume(struct mmc_host *host)
 	int err = 0;
 
 	mmc_claim_host(host);
-	mmc_log_string(host, "Enter\n");
 
 	if (!mmc_card_suspended(host->card))
 		goto out;
@@ -1314,7 +1297,6 @@ static int _mmc_sd_resume(struct mmc_host *host)
 #endif
 out:
 	mmc_release_host(host);
-	mmc_log_string(host, "Exit err: %d\n", err);
 	return err;
 }
 
@@ -1324,7 +1306,6 @@ out:
 static int mmc_sd_resume(struct mmc_host *host)
 {
 	pm_runtime_enable(&host->card->dev);
-	mmc_log_string(host, "done\n");
 	return 0;
 }
 

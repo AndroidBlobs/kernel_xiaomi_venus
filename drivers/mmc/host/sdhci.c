@@ -52,15 +52,6 @@ static bool sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd)
 
 void sdhci_dumpregs(struct sdhci_host *host)
 {
-	mmc_log_string(host->mmc,
-	"BLOCK_SIZE=0x%08x BLOCK_COUNT=0x%08x COMMAND=0x%08x INT_STATUS=0x%08x INT_ENABLE=0x%08x SIGNAL_ENABLE=0x%08x\n",
-	sdhci_readw(host, SDHCI_BLOCK_SIZE),
-	sdhci_readw(host, SDHCI_BLOCK_COUNT),
-	sdhci_readw(host, SDHCI_COMMAND),
-	sdhci_readl(host, SDHCI_INT_STATUS),
-	sdhci_readl(host, SDHCI_INT_ENABLE),
-	sdhci_readl(host, SDHCI_SIGNAL_ENABLE));
-
 	SDHCI_DUMP("============ SDHCI REGISTER DUMP ===========\n");
 
 	SDHCI_DUMP("Sys addr:  0x%08x | Version:  0x%08x\n",
@@ -119,15 +110,7 @@ void sdhci_dumpregs(struct sdhci_host *host)
 	}
 #if defined(CONFIG_SDC_QTI)
 	host->mmc->err_occurred = true;
-
-	if (host->ops->dump_vendor_regs)
-		host->ops->dump_vendor_regs(host);
 #endif
-
-#ifdef CONFIG_MMC_IPC_LOGGING
-	host->mmc->stop_tracing = true;
-#endif
-
 	SDHCI_DUMP("============================================\n");
 }
 EXPORT_SYMBOL_GPL(sdhci_dumpregs);
@@ -239,9 +222,6 @@ void sdhci_reset(struct sdhci_host *host, u8 mask)
 		if (timedout) {
 			pr_err("%s: Reset 0x%x never completed.\n",
 				mmc_hostname(host->mmc), (int)mask);
-			mmc_log_string(host->mmc,
-				"Reset 0x%x never completed.\n",
-				(int)mask);
 			sdhci_dumpregs(host);
 			return;
 		}
@@ -1163,12 +1143,6 @@ static void sdhci_prepare_data(struct sdhci_host *host, struct mmc_command *cmd)
 	} else {
 		sdhci_writew(host, data->blocks, SDHCI_BLOCK_COUNT);
 	}
-	mmc_log_string(host->mmc,
-		"HOST_CONTROL=0x%08x HOST_CONTROL2=0x%08x BLOCK_COUNT=0x%08x\n",
-		sdhci_readb(host, SDHCI_HOST_CONTROL),
-		sdhci_readw(host, SDHCI_HOST_CONTROL2),
-		sdhci_readw(host, SDHCI_BLOCK_COUNT));
-
 }
 
 static inline bool sdhci_auto_cmd12(struct sdhci_host *host,
@@ -1266,10 +1240,6 @@ static void sdhci_set_transfer_mode(struct sdhci_host *host,
 		mode |= SDHCI_TRNS_DMA;
 
 	sdhci_writew(host, mode, SDHCI_TRANSFER_MODE);
-	mmc_log_string(host->mmc,
-		"ARGUMENT2=0x%08x TRANSFER_MODE=0x%08x\n",
-		sdhci_readw(host, SDHCI_ARGUMENT2),
-		sdhci_readw(host, SDHCI_TRANSFER_MODE));
 }
 
 static bool sdhci_needs_reset(struct sdhci_host *host, struct mmc_request *mrq)
@@ -1337,8 +1307,6 @@ static void __sdhci_finish_data(struct sdhci_host *host, bool sw_data_timeout)
 	host->data = NULL;
 	host->data_cmd = NULL;
 
-	mmc_log_string(host->mmc, "PRESENT_STATE=0x%08x\n",
-		sdhci_readl(host, SDHCI_PRESENT_STATE));
 	/*
 	 * The controller needs a reset of internal state machines upon error
 	 * conditions.
@@ -1485,11 +1453,6 @@ static bool sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd)
 	sdhci_mod_timer(host, cmd->mrq, timeout);
 
 	sdhci_writew(host, SDHCI_MAKE_CMD(cmd->opcode, flags), SDHCI_COMMAND);
-	mmc_log_string(host->mmc,
-		"updated ARGUMENT=0x%08x ARGUMENT_MODE=0x%08x COMMAND=0x%08x\n",
-		sdhci_readl(host, SDHCI_ARGUMENT),
-		sdhci_readw(host, SDHCI_TRANSFER_MODE),
-		sdhci_readw(host, SDHCI_COMMAND));
 
 	return true;
 }
@@ -1519,8 +1482,6 @@ static bool sdhci_send_command_retry(struct sdhci_host *host,
 		if (!timeout--) {
 			pr_err("%s: Controller never released inhibit bit(s).\n",
 			       mmc_hostname(host->mmc));
-			mmc_log_string(host->mmc,
-				"Controller never released inhibit bit(s).\n");
 			sdhci_dumpregs(host);
 			cmd->error = -EIO;
 			return false;
@@ -1577,14 +1538,8 @@ static void sdhci_finish_command(struct sdhci_host *host)
 	if (cmd->flags & MMC_RSP_PRESENT) {
 		if (cmd->flags & MMC_RSP_136) {
 			sdhci_read_rsp_136(host, cmd);
-			mmc_log_string(host->mmc,
-				"resp 0: 0x%08x resp 1: 0x%08x resp 2: 0x%08x resp 3: 0x%08x\n",
-				cmd->resp[0], cmd->resp[1],
-				cmd->resp[2], cmd->resp[3]);
 		} else {
 			cmd->resp[0] = sdhci_readl(host, SDHCI_RESPONSE);
-			mmc_log_string(host->mmc, "resp 0: 0x%08x\n",
-				cmd->resp[0]);
 		}
 	}
 
@@ -1773,7 +1728,6 @@ void sdhci_enable_clk(struct sdhci_host *host, u16 clk)
 		if (timedout) {
 			pr_err("%s: Internal clock never stabilised.\n",
 			       mmc_hostname(host->mmc));
-			mmc_log_string(host->mmc, "Internal clock never stabilised.\n");
 			sdhci_dumpregs(host);
 			return;
 		}
@@ -1796,8 +1750,6 @@ void sdhci_enable_clk(struct sdhci_host *host, u16 clk)
 			if (timedout) {
 				pr_err("%s: PLL clock never stabilised.\n",
 				       mmc_hostname(host->mmc));
-				mmc_log_string(host->mmc,
-						"PLL clock never stabilised.\n");
 				sdhci_dumpregs(host);
 				return;
 			}
@@ -1928,18 +1880,6 @@ EXPORT_SYMBOL_GPL(sdhci_set_power);
  * MMC callbacks                                                             *
  *                                                                           *
 \*****************************************************************************/
-#if defined(CONFIG_SDC_QTI)
-static int sdhci_notify_load(struct mmc_host *mmc, enum mmc_load state)
-{
-	int err = 0;
-	struct sdhci_host *host = mmc_priv(mmc);
-
-	if (host->ops->notify_load)
-		err = host->ops->notify_load(host, state);
-
-	return err;
-}
-#endif
 
 void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
@@ -2803,9 +2743,6 @@ static const struct mmc_host_ops sdhci_ops = {
 	.execute_tuning			= sdhci_execute_tuning,
 	.card_event			= sdhci_card_event,
 	.card_busy	= sdhci_card_busy,
-#if defined(CONFIG_SDC_QTI)
-	.notify_load	= sdhci_notify_load,
-#endif
 };
 
 /*****************************************************************************\
@@ -2950,8 +2887,6 @@ static void sdhci_timeout_timer(struct timer_list *t)
 #endif
 		pr_err("%s: Timeout waiting for hardware cmd interrupt.\n",
 		       mmc_hostname(host->mmc));
-		mmc_log_string(host->mmc,
-			"Timeout waiting for hardware cmd interrupt.\n");
 		sdhci_dumpregs(host);
 
 		host->cmd->error = -ETIMEDOUT;
@@ -2977,7 +2912,6 @@ static void sdhci_timeout_data_timer(struct timer_list *t)
 #endif
 		pr_err("%s: Timeout waiting for hardware interrupt.\n",
 		       mmc_hostname(host->mmc));
-		mmc_log_string(host->mmc, "Timeout waiting for hardware interrupt.\n");
 		sdhci_dumpregs(host);
 
 		if (host->data) {
@@ -3029,9 +2963,6 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask, u32 *intmask_p)
 			return;
 		pr_err("%s: Got command interrupt 0x%08x even though no command operation was in progress.\n",
 		       mmc_hostname(host->mmc), (unsigned)intmask);
-		mmc_log_string(host->mmc,
-			"Got command interrupt 0x%08x even though no command operation was in progress.\n",
-			 (unsigned int)intmask);
 		sdhci_dumpregs(host);
 		return;
 	}
@@ -3173,9 +3104,6 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 
 		pr_err("%s: Got data interrupt 0x%08x even though no data operation was in progress.\n",
 		       mmc_hostname(host->mmc), (unsigned)intmask);
-		mmc_log_string(host->mmc,
-			"Got data interrupt 0x%08x even though no data operation was in progress.\n",
-			(unsigned int)intmask);
 		sdhci_dumpregs(host);
 
 		return;
@@ -3297,7 +3225,6 @@ static irqreturn_t sdhci_irq(int irq, void *dev_id)
 				goto cont;
 		}
 
-		mmc_log_string(host->mmc, "intmask: 0x%x\n", intmask);
 		/* Clear selected interrupts. */
 		mask = intmask & (SDHCI_INT_CMD_MASK | SDHCI_INT_DATA_MASK |
 				  SDHCI_INT_BUS_POWER);
@@ -3402,9 +3329,6 @@ out:
 	if (unexpected) {
 		pr_err("%s: Unexpected interrupt 0x%08x.\n",
 			   mmc_hostname(host->mmc), unexpected);
-		mmc_log_string(host->mmc,
-			"Unexpected interrupt 0x%08x.\n",
-			unexpected);
 		sdhci_dumpregs(host);
 	}
 
@@ -3726,37 +3650,20 @@ bool sdhci_cqe_irq(struct sdhci_host *host, u32 intmask, int *cmd_error,
 	if (!host->cqe_on)
 		return false;
 
-	if (intmask & (SDHCI_INT_INDEX | SDHCI_INT_END_BIT | SDHCI_INT_CRC)) {
+	if (intmask & (SDHCI_INT_INDEX | SDHCI_INT_END_BIT | SDHCI_INT_CRC))
 		*cmd_error = -EILSEQ;
-#if defined(CONFIG_SDC_QTI)
-		if (intmask & SDHCI_INT_CRC)
-			host->mmc->err_stats[MMC_ERR_CMD_CRC]++;
-#endif
-	} else if (intmask & SDHCI_INT_TIMEOUT) {
+	else if (intmask & SDHCI_INT_TIMEOUT)
 		*cmd_error = -ETIMEDOUT;
-#if defined(CONFIG_SDC_QTI)
-		host->mmc->err_stats[MMC_ERR_CMD_TIMEOUT]++;
-#endif
-	} else
+	else
 		*cmd_error = 0;
 
-	if (intmask & (SDHCI_INT_DATA_END_BIT | SDHCI_INT_DATA_CRC)) {
+	if (intmask & (SDHCI_INT_DATA_END_BIT | SDHCI_INT_DATA_CRC))
 		*data_error = -EILSEQ;
-#if defined(CONFIG_SDC_QTI)
-		if (intmask & SDHCI_INT_DATA_CRC)
-			host->mmc->err_stats[MMC_ERR_DAT_CRC]++;
-#endif
-	} else if (intmask & SDHCI_INT_DATA_TIMEOUT) {
+	else if (intmask & SDHCI_INT_DATA_TIMEOUT)
 		*data_error = -ETIMEDOUT;
-#if defined(CONFIG_SDC_QTI)
-		host->mmc->err_stats[MMC_ERR_DAT_TIMEOUT]++;
-#endif
-	} else if (intmask & SDHCI_INT_ADMA_ERROR) {
+	else if (intmask & SDHCI_INT_ADMA_ERROR)
 		*data_error = -EIO;
-#if defined(CONFIG_SDC_QTI)
-		host->mmc->err_stats[MMC_ERR_ADMA]++;
-#endif
-	} else
+	else
 		*data_error = 0;
 
 	/* Clear selected interrupts. */
@@ -3772,9 +3679,6 @@ bool sdhci_cqe_irq(struct sdhci_host *host, u32 intmask, int *cmd_error,
 		sdhci_writel(host, intmask, SDHCI_INT_STATUS);
 		pr_err("%s: CQE: Unexpected interrupt 0x%08x.\n",
 		       mmc_hostname(host->mmc), intmask);
-		mmc_log_string(host->mmc,
-			"CQE: Unexpected interrupt 0x%08x.\n",
-			intmask);
 		sdhci_dumpregs(host);
 	}
 
@@ -4030,6 +3934,9 @@ int sdhci_setup_host(struct sdhci_host *host)
 		pr_err("%s: Unknown controller version (%d). You may experience problems.\n",
 		       mmc_hostname(mmc), host->version);
 	}
+
+	if (host->quirks & SDHCI_QUIRK_BROKEN_CQE)
+		mmc->caps2 &= ~MMC_CAP2_CQE;
 
 	if (host->quirks & SDHCI_QUIRK_FORCE_DMA)
 		host->flags |= SDHCI_USE_SDMA;
@@ -4570,12 +4477,6 @@ int __sdhci_add_host(struct sdhci_host *host)
 	unsigned int flags = WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_HIGHPRI;
 	struct mmc_host *mmc = host->mmc;
 	int ret;
-
-	if ((mmc->caps2 & MMC_CAP2_CQE) &&
-	    (host->quirks & SDHCI_QUIRK_BROKEN_CQE)) {
-		mmc->caps2 &= ~MMC_CAP2_CQE;
-		mmc->cqe_ops = NULL;
-	}
 
 	host->complete_wq = alloc_workqueue("sdhci", flags, 0);
 	if (!host->complete_wq)
