@@ -311,7 +311,7 @@ adreno_drawctxt_create(struct kgsl_device_private *dev_priv,
 	struct adreno_context *drawctxt;
 	struct kgsl_device *device = dev_priv->device;
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
-	const struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
+	struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 	int ret;
 	unsigned int local;
 
@@ -401,13 +401,6 @@ adreno_drawctxt_create(struct kgsl_device_private *dev_priv,
 
 	adreno_context_debugfs_init(ADRENO_DEVICE(device), drawctxt);
 
-	if (!test_bit(GMU_DISPATCH, &device->gmu_core.flags)) {
-		/* set the context ringbuffer */
-		drawctxt->rb = adreno_ctx_get_rb(adreno_dev, drawctxt);
-
-		INIT_LIST_HEAD(&drawctxt->active_node);
-	}
-
 	if (gpudev->preemption_context_init) {
 		ret = gpudev->preemption_context_init(&drawctxt->base);
 		if (ret != 0) {
@@ -418,6 +411,13 @@ adreno_drawctxt_create(struct kgsl_device_private *dev_priv,
 
 	/* copy back whatever flags we dediced were valid */
 	*flags = drawctxt->base.flags;
+
+	if (!test_bit(GMU_DISPATCH, &device->gmu_core.flags)) {
+		/* set the context ringbuffer */
+		drawctxt->rb = adreno_ctx_get_rb(adreno_dev, drawctxt);
+
+		INIT_LIST_HEAD(&drawctxt->active_node);
+	}
 
 	return &drawctxt->base;
 }
@@ -491,7 +491,7 @@ void adreno_drawctxt_detach(struct kgsl_context *context)
 {
 	struct kgsl_device *device;
 	struct adreno_device *adreno_dev;
-	const struct adreno_gpudev *gpudev;
+	struct adreno_gpudev *gpudev;
 	struct adreno_context *drawctxt;
 	int count, i;
 	struct kgsl_drawobj *list[ADRENO_CONTEXT_DRAWQUEUE_SIZE];

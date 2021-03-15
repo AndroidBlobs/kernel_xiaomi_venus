@@ -262,7 +262,7 @@ static int ctx_print(struct seq_file *s, void *unused)
 		   kgsl_context_type(drawctxt->type),
 		   drawctxt->base.priority,
 		   drawctxt->base.proc_priv->comm,
-		   pid_nr(drawctxt->base.proc_priv->pid),
+		   drawctxt->base.proc_priv->pid,
 		   drawctxt->base.tid);
 
 	seq_puts(s, "flags: ");

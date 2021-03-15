@@ -72,19 +72,11 @@ static int globals_print(struct seq_file *s, void *unused)
 
 	list_for_each_entry(md, &device->globals, node) {
 		struct kgsl_memdesc *memdesc = &md->memdesc;
-		char flags[6];
 
-		flags[0] = memdesc->priv & KGSL_MEMDESC_PRIVILEGED ?  'p' : '-';
-		flags[1] = !(memdesc->flags & KGSL_MEMFLAGS_GPUREADONLY) ? 'w' : '-';
-		flags[2] = kgsl_memdesc_is_secured(memdesc) ?  's' : '-';
-		flags[3] = memdesc->priv & KGSL_MEMDESC_RANDOM ?  'r' : '-';
-		flags[4] = memdesc->priv & KGSL_MEMDESC_UCODE ? 'u' : '-';
-		flags[5] = '\0';
-
-		seq_printf(s, "0x%pK-0x%pK %16llu %5s %s\n",
+		seq_printf(s, "0x%pK-0x%pK %16llu %s\n",
 			(u64 *)(uintptr_t) memdesc->gpuaddr,
 			(u64 *)(uintptr_t) (memdesc->gpuaddr +
-			memdesc->size - 1), memdesc->size, flags,
+			memdesc->size - 1), memdesc->size,
 			md->name);
 	}
 
@@ -184,8 +176,7 @@ static int print_mem_entry(void *data, void *ptr)
 	flags[3] = get_alignflag(m);
 	flags[4] = get_cacheflag(m);
 	flags[5] = kgsl_memdesc_use_cpu_map(m) ? 'p' : '-';
-	/* Show Y if at least one vma has this entry mapped (could be multiple) */
-	flags[6] = atomic_read(&entry->map_count) ? 'Y' : 'N';
+	flags[6] = (m->useraddr) ? 'Y' : 'N';
 	flags[7] = kgsl_memdesc_is_secured(m) ?  's' : '-';
 	flags[8] = '-';
 	flags[9] = '\0';
@@ -198,13 +189,10 @@ static int print_mem_entry(void *data, void *ptr)
 
 	seq_printf(s, "%pK %pK %16llu %5d %9s %10s %16s %5d %16llu %6d %6d",
 			(uint64_t *)(uintptr_t) m->gpuaddr,
-			/*
-			 * Show zero for the useraddr - we can't reliably track
-			 * that value for multiple vmas anyway
-			 */
-			0, m->size, entry->id, flags,
+			(unsigned long *) m->useraddr,
+			m->size, entry->id, flags,
 			memtype_str(usermem_type),
-			usage, (m->sgt ? m->sgt->nents : 0), m->size,
+			usage, (m->sgt ? m->sgt->nents : 0), m->mapsize,
 			egl_surface_count, egl_image_count);
 
 	if (entry->metadata[0] != 0)
@@ -343,7 +331,7 @@ void kgsl_process_init_debugfs(struct kgsl_process_private *private)
 	unsigned char name[16];
 	struct dentry *dentry;
 
-	snprintf(name, sizeof(name), "%d", pid_nr(private->pid));
+	snprintf(name, sizeof(name), "%d", private->pid);
 
 	private->debug_root = debugfs_create_dir(name, proc_d_debugfs);
 
@@ -363,7 +351,7 @@ void kgsl_process_init_debugfs(struct kgsl_process_private *private)
 	}
 
 	dentry = debugfs_create_file("mem", 0444, private->debug_root,
-		(void *) ((unsigned long) pid_nr(private->pid)), &process_mem_fops);
+		(void *) ((unsigned long) private->pid), &process_mem_fops);
 
 	if (IS_ERR_OR_NULL(dentry))
 		WARN((dentry == NULL),

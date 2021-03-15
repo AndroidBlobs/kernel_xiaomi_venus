@@ -58,14 +58,5 @@ config QCOM_KGSL_IDLE_TIMEOUT
 	default 80
 	help
 	  GPU idle timeout for Adreno GPU. This value decides after how
-	  long the GPU will go into slumber. A higher value will mean that
-	  the GPU is powered ON for a longer duration which will have
-	  power costs.
-
-config QCOM_KGSL_CONTEXT_DEBUG
-	bool "Log kgsl context information for all processes"
-	depends on QCOM_KGSL
-	help
-	  When enabled, total number of KGSL contexts, number of attached and
-	  detached contexts are dumped into kernel log for all the processes.
-	  This gives insight about the number of contexts held by each process.
+	  long the GPU will go into slumber. This value is 100 seconds for
+	  a GKI enabled build else it is 80ms.

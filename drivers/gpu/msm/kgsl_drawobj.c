@@ -912,8 +912,6 @@ int kgsl_drawobj_add_timeline(struct kgsl_device_private *dev_priv,
 
 		trace_kgsl_drawobj_timeline(val.timeline, val.seqno);
 		timelineobj->timelines[i].seqno = val.seqno;
-
-		src += cmd.timelines_size;
 	}
 
 	timelineobj->count = cmd.count;
@@ -1214,7 +1212,7 @@ int kgsl_drawobj_cmd_add_cmdlist(struct kgsl_device *device,
 		/* Sanity check the flags */
 		if (!(obj.flags & CMDLIST_FLAGS)) {
 			dev_err(device->dev,
-				     "invalid cmdobj ctxt %d flags %d id %d offset %llu addr %llx size %llu\n",
+				     "invalid cmdobj ctxt %d flags %d id %d offset %lld addr %lld size %lld\n",
 				     baseobj->context->id, obj.flags, obj.id,
 				     obj.offset, obj.gpuaddr, obj.size);
 			return -EINVAL;

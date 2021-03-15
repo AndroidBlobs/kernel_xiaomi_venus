@@ -43,7 +43,7 @@ void kgsl_snapshot_push_object(struct kgsl_device *device,
 	int index;
 	struct kgsl_mem_entry *entry;
 
-	if (process == NULL || gpuaddr == 0)
+	if (process == NULL)
 		return;
 
 	/*
@@ -718,7 +718,7 @@ static void setup_fault_process(struct kgsl_device *device,
 	if (kgsl_mmu_is_perprocess(&device->mmu)) {
 		struct kgsl_process_private *tmp;
 
-		read_lock(&kgsl_driver.proclist_lock);
+		spin_lock(&kgsl_driver.proclist_lock);
 		list_for_each_entry(tmp, &kgsl_driver.process_list, list) {
 			u64 pt_ttbr0;
 
@@ -729,7 +729,7 @@ static void setup_fault_process(struct kgsl_device *device,
 				break;
 			}
 		}
-		read_unlock(&kgsl_driver.proclist_lock);
+		spin_unlock(&kgsl_driver.proclist_lock);
 	}
 done:
 	snapshot->process = process;
@@ -816,7 +816,7 @@ void adreno_snapshot(struct kgsl_device *device, struct kgsl_snapshot *snapshot,
 {
 	unsigned int i;
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
-	const struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
+	struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 
 	ib_max_objs = 0;
 	/* Reset the list of objects */

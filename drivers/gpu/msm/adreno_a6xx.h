@@ -407,37 +407,4 @@ bool a6xx_hw_isidle(struct adreno_device *adreno_dev);
  */
 void a6xx_spin_idle_debug(struct adreno_device *adreno_dev,
 	const char *str);
-
-/**
- * a6xx_perfcounter_update - Update the IFPC perfcounter list
- * @adreno_dev: An Adreno GPU handle
- * @reg: Perfcounter reg struct to add/remove to the list
- * @update_reg: true if the perfcounter needs to be programmed by the CPU
- *
- * Return: 0 on success or -EBUSY if the lock couldn't be taken
- */
-int a6xx_perfcounter_update(struct adreno_device *adreno_dev,
-	struct adreno_perfcount_register *reg, bool update_reg);
-
-extern const struct adreno_perfcounters adreno_a630_perfcounters;
-extern const struct adreno_perfcounters adreno_a6xx_perfcounters;
-extern const struct adreno_perfcounters adreno_a6xx_legacy_perfcounters;
-
-/**
- * a6xx_rdpm_mx_freq_update - Update the mx frequency
- * @gmu: An Adreno GMU handle
- * @freq: Frequency in KHz
- *
- * This function communicates GPU mx frequency(in Mhz) changes to rdpm.
- */
-void a6xx_rdpm_mx_freq_update(struct a6xx_gmu_device *gmu, u32 freq);
-
-/**
- * a6xx_rdpm_cx_freq_update - Update the cx frequency
- * @gmu: An Adreno GMU handle
- * @freq: Frequency in KHz
- *
- * This function communicates GPU cx frequency(in Mhz) changes to rdpm.
- */
-void a6xx_rdpm_cx_freq_update(struct a6xx_gmu_device *gmu, u32 freq);
 #endif

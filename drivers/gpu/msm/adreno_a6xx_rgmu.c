@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
  */
 
 #include <linux/clk-provider.h>
@@ -64,7 +65,8 @@ static void a6xx_rgmu_active_count_put(struct adreno_device *adreno_dev)
 	if (atomic_dec_and_test(&device->active_cnt)) {
 		kgsl_pwrscale_update_stats(device);
 		kgsl_pwrscale_update(device);
-		kgsl_start_idle_timer(device);
+		mod_timer(&device->idle_timer,
+			jiffies + device->pwrctrl.interval_timeout);
 	}
 
 	trace_kgsl_active_count(device,
@@ -678,7 +680,7 @@ static void halt_gbif_arb(struct adreno_device *adreno_dev)
 
 	/* Halt all AXI requests */
 	kgsl_regwrite(device, A6XX_GBIF_HALT, A6XX_GBIF_ARB_HALT_MASK);
-	adreno_wait_for_halt_ack(device, A6XX_GBIF_HALT_ACK,
+	adreno_wait_for_halt_ack(device, ADRENO_REG_GBIF_HALT_ACK,
 		A6XX_GBIF_ARB_HALT_MASK);
 
 	/* De-assert the halts */
@@ -855,7 +857,8 @@ static void rgmu_idle_check(struct work_struct *work)
 		a6xx_power_off(adreno_dev);
 	} else {
 		kgsl_pwrscale_update(device);
-		kgsl_start_idle_timer(device);
+		mod_timer(&device->idle_timer,
+			jiffies + device->pwrctrl.interval_timeout);
 	}
 
 done:
@@ -889,7 +892,8 @@ static int a6xx_boot(struct adreno_device *adreno_dev)
 	if (ret)
 		return ret;
 
-	kgsl_start_idle_timer(device);
+	mod_timer(&device->idle_timer, jiffies +
+			device->pwrctrl.interval_timeout);
 
 	kgsl_pwrscale_wake(device);
 
@@ -991,7 +995,7 @@ static int a6xx_first_boot(struct adreno_device *adreno_dev)
 	adreno_get_bus_counters(adreno_dev);
 
 	adreno_dev->profile_buffer = kgsl_allocate_global(device, PAGE_SIZE, 0,
-				0, 0, "alwayson");
+				0, "alwayson");
 
 	adreno_dev->profile_index = 0;
 
@@ -1037,6 +1041,15 @@ static int a6xx_power_off(struct adreno_device *adreno_dev)
 	if (!test_bit(RGMU_PRIV_GPU_STARTED, &rgmu->flags))
 		return 0;
 
+	/*
+	 * If this config is enabled, the smmu driver keeps the cx gdsc always
+	 * ON. So it is better if we don't turn off the GPU unless we are
+	 * really desperate like in the case of gpu recovery. In that case, the
+	 * power off is handled by a different path.
+	 */
+	if (!IS_ENABLED(CONFIG_ARM_SMMU_POWER_DONT_ALWAYS_ON))
+		return 0;
+
 	trace_kgsl_pwr_request_state(device, KGSL_STATE_SLUMBER);
 
 	adreno_suspend_context(device);
@@ -1065,7 +1078,7 @@ no_gx_power:
 	/* Halt all gx traffic */
 	kgsl_regwrite(device, A6XX_GBIF_HALT, A6XX_GBIF_CLIENT_HALT_MASK);
 
-	adreno_wait_for_halt_ack(device, A6XX_GBIF_HALT_ACK,
+	adreno_wait_for_halt_ack(device, ADRENO_REG_GBIF_HALT_ACK,
 		A6XX_GBIF_CLIENT_HALT_MASK);
 
 	kgsl_pwrctrl_irq(device, KGSL_PWRFLAGS_OFF);
@@ -1191,7 +1204,7 @@ static void a6xx_rgmu_pm_resume(struct adreno_device *adreno_dev)
 	adreno_dispatcher_start(device);
 }
 
-static const struct gmu_dev_ops a6xx_rgmudev = {
+static struct gmu_dev_ops a6xx_rgmudev = {
 	.oob_set = a6xx_rgmu_oob_set,
 	.oob_clear = a6xx_rgmu_oob_clear,
 	.gx_is_on = a6xx_rgmu_gx_is_on,

@@ -96,15 +96,6 @@ _kgsl_pool_add_page(struct kgsl_page_pool *pool, struct page *p)
 	if (!p)
 		return;
 
-	/*
-	 * Sanity check to make sure we don't re-pool a page that
-	 * somebody else has a reference to.
-	 */
-	if (WARN_ON(unlikely(page_count(p) > 1))) {
-		__free_pages(p, pool->pool_order);
-		return;
-	}
-
 	spin_lock(&pool->list_lock);
 	list_add_tail(&p->lru, &pool->page_list);
 	pool->page_count++;
@@ -120,14 +111,11 @@ _kgsl_pool_get_page(struct kgsl_page_pool *pool)
 	struct page *p = NULL;
 
 	spin_lock(&pool->list_lock);
-
-	p = list_first_entry_or_null(&pool->page_list, struct page, lru);
-	if (p == NULL) {
-		spin_unlock(&pool->list_lock);
-		return NULL;
+	if (pool->page_count) {
+		p = list_first_entry(&pool->page_list, struct page, lru);
+		pool->page_count--;
+		list_del(&p->lru);
 	}
-	pool->page_count--;
-	list_del(&p->lru);
 	spin_unlock(&pool->list_lock);
 	mod_node_page_state(page_pgdat(p), NR_KERNEL_MISC_RECLAIMABLE,
 				-(1 << pool->pool_order));
@@ -445,8 +433,7 @@ int kgsl_pool_alloc_pages(u64 size, struct page ***pages, struct device *dev)
 {
 	int count = 0;
 	int npages = size >> PAGE_SHIFT;
-	struct page **local = kvcalloc(npages, sizeof(*local),
-		GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN);
+	struct page **local = kvcalloc(npages, sizeof(*local), GFP_KERNEL);
 	u32 page_size, align;
 	u64 len = size;
 
