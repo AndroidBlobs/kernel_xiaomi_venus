@@ -22,11 +22,6 @@
 #define ADRASTEA_DEVICE_ID 0xabcd
 #define QMI_WLFW_MAX_NUM_MEM_SEG 32
 #define THERMAL_NAME_LENGTH 20
-#define ICNSS_SMEM_VALUE_MASK 0xFFFFFFFF
-#define ICNSS_SMEM_SEQ_NO_POS 16
-#define QCA6750_PATH_PREFIX    "qca6750/"
-#define ICNSS_MAX_FILE_NAME      20
-
 extern uint64_t dynamic_feature_mask;
 
 enum icnss_bdf_type {
@@ -56,7 +51,6 @@ enum icnss_driver_event_type {
 	ICNSS_DRIVER_EVENT_QDSS_TRACE_REQ_MEM,
 	ICNSS_DRIVER_EVENT_QDSS_TRACE_SAVE,
 	ICNSS_DRIVER_EVENT_QDSS_TRACE_FREE,
-	ICNSS_DRIVER_EVENT_M3_DUMP_UPLOAD_REQ,
 	ICNSS_DRIVER_EVENT_MAX,
 };
 
@@ -115,7 +109,6 @@ enum icnss_driver_state {
 	ICNSS_BLOCK_SHUTDOWN,
 	ICNSS_PDR,
 	ICNSS_DEL_SERVER,
-	ICNSS_COLD_BOOT_CAL,
 };
 
 struct ce_irq_list {
@@ -131,7 +124,6 @@ struct icnss_vreg_cfg {
 	u32 delay_us;
 	u32 need_unvote;
 	bool required;
-	bool is_supported;
 };
 
 struct icnss_vreg_info {
@@ -139,15 +131,6 @@ struct icnss_vreg_info {
 	struct regulator *reg;
 	struct icnss_vreg_cfg cfg;
 	u32 enabled;
-};
-
-struct icnss_cpr_info {
-	resource_size_t tcs_cmd_base_addr;
-	resource_size_t tcs_cmd_data_addr;
-	void __iomem *tcs_cmd_base_addr_io;
-	void __iomem *tcs_cmd_data_addr_io;
-	u32 cpr_pmic_addr;
-	u32 voltage;
 };
 
 enum icnss_vreg_type {
@@ -173,12 +156,6 @@ struct icnss_fw_mem {
 	u8 valid;
 	u32 type;
 	unsigned long attrs;
-};
-
-enum icnss_smp2p_msg_id {
-	ICNSS_POWER_SAVE_ENTER = 1,
-	ICNSS_POWER_SAVE_EXIT,
-	ICNSS_TRIGGER_SSR,
 };
 
 struct icnss_stats {
@@ -253,9 +230,6 @@ struct icnss_stats {
 	u32 exit_power_save_req;
 	u32 exit_power_save_resp;
 	u32 exit_power_save_err;
-	u32 enter_power_save_req;
-	u32 enter_power_save_resp;
-	u32 enter_power_save_err;
 	u32 soc_wake_req;
 	u32 soc_wake_resp;
 	u32 soc_wake_err;
@@ -319,12 +293,6 @@ struct icnss_thermal_cdev {
 	struct thermal_cooling_device *tcdev;
 };
 
-struct smp2p_out_info {
-	unsigned short seq;
-	unsigned int smem_bit;
-	struct qcom_smem_state *smem_state;
-};
-
 struct icnss_priv {
 	uint32_t magic;
 	struct platform_device *pdev;
@@ -332,13 +300,11 @@ struct icnss_priv {
 	struct ce_irq_list ce_irq_list[ICNSS_MAX_IRQ_REGISTRATIONS];
 	struct list_head vreg_list;
 	struct list_head clk_list;
-	struct icnss_cpr_info cpr_info;
 	unsigned long device_id;
 	struct icnss_msi_config *msi_config;
 	u32 msi_base_data;
 	struct icnss_control_params ctrl_params;
 	u8 cal_done;
-	u8 use_prefix_path;
 	u32 ce_irqs[ICNSS_MAX_IRQ_REGISTRATIONS];
 	u32 srng_irqs[IWCN_MAX_IRQ_REGISTRATIONS];
 	phys_addr_t mem_base_pa;
@@ -393,11 +359,6 @@ struct icnss_priv {
 	uint8_t *diag_reg_read_buf;
 	atomic_t pm_count;
 	struct ramdump_device *msa0_dump_dev;
-	struct ramdump_device *m3_dump_dev_seg1;
-	struct ramdump_device *m3_dump_dev_seg2;
-	struct ramdump_device *m3_dump_dev_seg3;
-	struct ramdump_device *m3_dump_dev_seg4;
-	struct ramdump_device *m3_dump_dev_seg5;
 	bool force_err_fatal;
 	bool allow_recursive_recovery;
 	bool early_crash_ind;
@@ -407,7 +368,6 @@ struct icnss_priv {
 	struct mutex dev_lock;
 	uint32_t fw_error_fatal_irq;
 	uint32_t fw_early_crash_irq;
-	struct smp2p_out_info smp2p_info;
 	struct completion unblock_shutdown;
 	struct adc_tm_param vph_monitor_params;
 	struct adc_tm_chip *adc_tm_dev;
@@ -430,8 +390,6 @@ struct icnss_priv {
 	void *hang_event_data;
 	struct list_head icnss_tcdev_list;
 	struct mutex tcdev_lock;
-	bool is_chain1_supported;
-	bool chain_reg_info_updated;
 };
 
 struct icnss_reg_info {
@@ -454,9 +412,5 @@ int icnss_soc_wake_event_post(struct icnss_priv *priv,
 			      u32 flags, void *data);
 int icnss_get_iova(struct icnss_priv *priv, u64 *addr, u64 *size);
 int icnss_get_iova_ipa(struct icnss_priv *priv, u64 *addr, u64 *size);
-int icnss_get_cpr_info(struct icnss_priv *priv);
-int icnss_update_cpr_info(struct icnss_priv *priv);
-void icnss_add_fw_prefix_name(struct icnss_priv *priv, char *prefix_name,
-			      char *name);
 #endif
 

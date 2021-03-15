@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
  */
 
 #include <linux/init.h>
@@ -25,28 +26,24 @@
 #include <linux/perf_event.h>
 #include <linux/errno.h>
 #include <linux/topology.h>
-#include <linux/scmi_protocol.h>
 
 #define POLL_INT 25
 #define NODE_NAME_MAX_CHARS 16
 
+#ifdef CONFIG_MSM_PERFORMANCE_QGKI
 #define QUEUE_POOL_SIZE 512 /*2^8 always keep in 2^x */
 #define INST_EV 0x08 /* 0th event*/
 #define CYC_EV 0x11 /* 1st event*/
 #define INIT "Init"
-#define CPU_CYCLE_THRESHOLD 650000
-
-#ifdef CONFIG_MSM_PERFORMANCE_QGKI
 static DEFINE_PER_CPU(bool, cpu_is_idle);
 static DEFINE_PER_CPU(bool, cpu_is_hp);
-static DEFINE_MUTEX(perfevent_lock);
-#endif
 
 enum event_idx {
 	INST_EVENT,
 	CYC_EVENT,
 	NO_OF_EVENT
 };
+#endif
 
 enum cpu_clusters {
 	MIN = 0,
@@ -108,6 +105,8 @@ static unsigned int aggr_top_load;
 static unsigned int top_load[CLUSTER_MAX];
 static unsigned int curr_cap[CLUSTER_MAX];
 static bool max_cap_cpus[NR_CPUS];
+
+static atomic_t game_status;
 static atomic_t game_status_pid;
 #endif
 static bool ready_for_freq_updates;
@@ -230,7 +229,7 @@ static int set_cpu_min_freq(const char *buf, const struct kernel_param *kp)
 		if (cpufreq_get_policy(&policy, i))
 			continue;
 
-		if (cpu_online(i)) {
+		if (cpu_online(i) && (policy.min != i_cpu_stats->min)) {
 			req = &per_cpu(qos_req_min, i);
 			if (freq_qos_update_request(req, i_cpu_stats->min) < 0)
 				break;
@@ -313,7 +312,7 @@ static int set_cpu_max_freq(const char *buf, const struct kernel_param *kp)
 		if (cpufreq_get_policy(&policy, i))
 			continue;
 
-		if (cpu_online(i)) {
+		if (cpu_online(i) && (policy.max != i_cpu_stats->max)) {
 			req = &per_cpu(qos_req_max, i);
 			if (freq_qos_update_request(req, i_cpu_stats->max) < 0)
 				break;
@@ -466,25 +465,31 @@ static struct kobject *notify_kobj;
 /*******************************sysfs ends************************************/
 
 /*****************PMU Data Collection*****************/
-static struct perf_event_attr attr;
-static void msm_perf_init_attr(void)
+static struct perf_event_attr *msm_perf_alloc_attr(void)
 {
-	memset(&attr, 0, sizeof(struct perf_event_attr));
+	struct perf_event_attr *attr = NULL;
 
-	attr.type = PERF_TYPE_RAW;
-	attr.size = sizeof(struct perf_event_attr);
-	attr.pinned = 1;
+	attr = kzalloc(sizeof(struct perf_event_attr), GFP_KERNEL);
+	if (!attr)
+		return attr;
+
+	attr->type = PERF_TYPE_RAW;
+	attr->size = sizeof(struct perf_event_attr);
+	attr->pinned = 1;
+
+	return attr;
 }
 
-static int set_event(struct event_data *ev, int cpu)
+static int set_event(struct event_data *ev, int cpu,
+					 struct perf_event_attr *attr)
 {
 	struct perf_event *pevent;
 
-	pevent = perf_event_create_kernel_counter(&attr,
+	pevent = perf_event_create_kernel_counter(attr,
 				cpu, NULL, NULL, NULL);
 	if (IS_ERR(pevent)) {
 		pr_err("msm_perf: %s failed, eventId:0x%x, cpu:%d, error code:%ld\n",
-				__func__, attr.config, cpu, PTR_ERR(pevent));
+				__func__, attr->config, cpu, PTR_ERR(pevent));
 		return PTR_ERR(pevent);
 	}
 	ev->pevent = pevent;
@@ -511,26 +516,30 @@ static void free_pmu_counters(unsigned int cpu)
 
 static int init_pmu_counter(void)
 {
+	struct perf_event_attr *attr = msm_perf_alloc_attr();
 	int cpu;
 	unsigned long cpu_capacity[NR_CPUS];
 	unsigned long min_cpu_capacity = ULONG_MAX;
 	int ret = 0;
 
-	msm_perf_init_attr();
+	if (!attr)
+		return -ENOMEM;
 
 	/* Create events per CPU */
 	for_each_possible_cpu(cpu) {
 		/* create Instruction event */
-		attr.config = INST_EV;
-		ret = set_event(&pmu_events[INST_EVENT][cpu], cpu);
+		attr->config = INST_EV;
+		ret = set_event(&pmu_events[INST_EVENT][cpu], cpu, attr);
 		if (ret < 0) {
+			kfree(attr);
 			return ret;
 		}
 		/* create cycle event */
-		attr.config = CYC_EV;
-		ret = set_event(&pmu_events[CYC_EVENT][cpu], cpu);
+		attr->config = CYC_EV;
+		ret = set_event(&pmu_events[CYC_EVENT][cpu], cpu, attr);
 		if (ret < 0) {
 			free_pmu_counters(cpu);
+			kfree(attr);
 			return ret;
 		}
 		/* find capacity per cpu */
@@ -545,6 +554,7 @@ static int init_pmu_counter(void)
 			max_cap_cpus[cpu] = true;
 	}
 
+	kfree(attr);
 	return 0;
 }
 
@@ -553,11 +563,8 @@ static inline void msm_perf_read_event(struct event_data *event)
 	u64 ev_count = 0;
 	u64 total, enabled, running;
 
-	mutex_lock(&perfevent_lock);
-	if (!event->pevent) {
-		mutex_unlock(&perfevent_lock);
+	if (!event->pevent)
 		return;
-	}
 
 	if (!per_cpu(cpu_is_idle, event->pevent->cpu) &&
 				!per_cpu(cpu_is_hp, event->pevent->cpu))
@@ -568,7 +575,7 @@ static inline void msm_perf_read_event(struct event_data *event)
 	ev_count = total - event->prev_count;
 	event->prev_count = total;
 	event->cur_delta = ev_count;
-	mutex_unlock(&perfevent_lock);
+
 }
 
 static int get_cpu_total_instruction(char *buf, const struct kernel_param *kp)
@@ -590,7 +597,7 @@ static int get_cpu_total_instruction(char *buf, const struct kernel_param *kp)
 		cycles = pmu_events[CYC_EVENT][cpu].cur_delta;
 		/* collecting max inst and ipc for max cap and min cap cpus */
 		if (max_cap_cpus[cpu]) {
-			if (cycles && cycles >= CPU_CYCLE_THRESHOLD)
+			if (cycles)
 				ipc_big = max(ipc_big,
 						((instruction*100)/cycles));
 			total_inst_big += instruction;
@@ -618,37 +625,46 @@ module_param_cb(inst, &param_ops_cpu_total_instruction, NULL, 0444);
 
 static int restart_events(unsigned int cpu, bool cpu_up)
 {
+	struct perf_event_attr *attr = msm_perf_alloc_attr();
 	int ret = 0;
 
-	msm_perf_init_attr();
+	if (!attr)
+		return -ENOMEM;
 
 	if (cpu_up) {
 		/* create Instruction event */
-		attr.config = INST_EV;
-		ret = set_event(&pmu_events[INST_EVENT][cpu], cpu);
+		attr->config = INST_EV;
+		ret = set_event(&pmu_events[INST_EVENT][cpu], cpu, attr);
 		if (ret < 0) {
+			kfree(attr);
 			return ret;
 		}
 		/* create cycle event */
-		attr.config = CYC_EV;
-		ret = set_event(&pmu_events[CYC_EVENT][cpu], cpu);
+		attr->config = CYC_EV;
+		ret = set_event(&pmu_events[CYC_EVENT][cpu], cpu, attr);
 		if (ret < 0) {
 			free_pmu_counters(cpu);
+			kfree(attr);
 			return ret;
 		}
 	} else {
 		free_pmu_counters(cpu);
 	}
 
+	kfree(attr);
 	return 0;
 }
 
 static int hotplug_notify_down(unsigned int cpu)
 {
-	mutex_lock(&perfevent_lock);
-	per_cpu(cpu_is_hp, cpu) = true;
-	restart_events(cpu, false);
-	mutex_unlock(&perfevent_lock);
+	unsigned long flags;
+
+	if (events_group.init_success) {
+		spin_lock_irqsave(&(events_group.cpu_hotplug_lock), flags);
+		per_cpu(cpu_is_hp, cpu) = true;
+		restart_events(cpu, false);
+		spin_unlock_irqrestore(&(events_group.cpu_hotplug_lock), flags);
+	}
 
 	return 0;
 }
@@ -657,14 +673,11 @@ static int hotplug_notify_up(unsigned int cpu)
 {
 	unsigned long flags;
 
-	mutex_lock(&perfevent_lock);
-	restart_events(cpu, true);
-	per_cpu(cpu_is_hp, cpu) = false;
-	mutex_unlock(&perfevent_lock);
-
 	if (events_group.init_success) {
 		spin_lock_irqsave(&(events_group.cpu_hotplug_lock), flags);
 		events_group.cpu_hotplug = true;
+		restart_events(cpu, true);
+		per_cpu(cpu_is_hp, cpu) = false;
 		spin_unlock_irqrestore(&(events_group.cpu_hotplug_lock), flags);
 		wake_up_process(events_notify_thread);
 	}
@@ -877,7 +890,7 @@ module_param_cb(core_ctl_register, &param_ops_cc_register,
 
 void  msm_perf_events_update(enum evt_update_t update_typ,
 			enum gfx_evt_t evt_typ, pid_t pid,
-			uint32_t ctx_id, uint32_t timestamp, bool end_of_frame)
+			uint32_t ctx_id, uint32_t timestamp)
 {
 	unsigned long flags;
 	int idx = 0;
@@ -885,8 +898,8 @@ void  msm_perf_events_update(enum evt_update_t update_typ,
 	if (update_typ != MSM_PERF_GFX)
 		return;
 
-	if (pid != atomic_read(&game_status_pid) || (timestamp == 0)
-		|| !(end_of_frame))
+	if (!atomic_read(&game_status) ||
+	(pid != atomic_read(&game_status_pid)))
 		return;
 
 	spin_lock_irqsave(&gfx_circ_buff_lock, flags);
@@ -903,6 +916,30 @@ void  msm_perf_events_update(enum evt_update_t update_typ,
 		complete(&gfx_evt_arrival);
 }
 
+
+
+static int set_game_start_event(const char *buf, const struct kernel_param *kp)
+{
+	long usr_val = 0;
+	int ret = strlen(buf);
+
+	kstrtol(buf, 0, &usr_val);
+	atomic_set(&game_status, usr_val);
+	return ret;
+}
+
+static int get_game_start_event(char *buf, const struct kernel_param *kp)
+{
+	long usr_val  = atomic_read(&game_status);
+
+	return scnprintf(buf, PAGE_SIZE, "%ld\n", usr_val);
+}
+
+static const struct kernel_param_ops param_ops_game_start_evt = {
+	.set = set_game_start_event,
+	.get = get_game_start_event,
+};
+module_param_cb(evnt_gplaf_status, &param_ops_game_start_evt, NULL, 0644);
 
 static int set_game_start_pid(const char *buf, const struct kernel_param *kp)
 {
@@ -926,165 +963,22 @@ static const struct kernel_param_ops param_ops_game_start_pid = {
 	.get = get_game_start_pid,
 };
 module_param_cb(evnt_gplaf_pid, &param_ops_game_start_pid, NULL, 0644);
-#endif /* CONFIG_MSM_PERFORMANCE_QGKI */
 
 /*******************************GFX Call************************************/
-#ifdef CONFIG_QTI_PLH
-static struct scmi_handle *plh_handle;
-void rimps_plh_init(struct scmi_handle *handle)
+
+static int splh_notif;
+static void init_splh_notif(const char *buf)
 {
-	if (handle)
-		plh_handle = handle;
-}
-EXPORT_SYMBOL(rimps_plh_init);
+	/*buf contains the init info from user*/
+	if (buf == NULL)
+		return;
 
-static int splh_notif, splh_init_done, plh_log_level;
-
-#define PLH_MIN_LOG_LEVEL			0
-#define PLH_MAX_LOG_LEVEL			0xF
-#define SPLH_FPS_MAX_CNT			8
-#define SPLH_IPC_FREQ_VTBL_MAX_CNT		5 /* ipc freq pair */
-#define SPLH_INIT_IPC_FREQ_TBL_PARAMS	\
-			(2 + SPLH_FPS_MAX_CNT * (1 + (2 * SPLH_IPC_FREQ_VTBL_MAX_CNT)))
-
-static int set_plh_log_level(const char *buf, const struct kernel_param *kp)
-{
-	int ret, log_val_backup;
-	struct scmi_plh_vendor_ops *ops;
-
-	if (!plh_handle || !plh_handle->plh_ops) {
-		pr_err("msm_perf: plh scmi handle or vendor ops null\n");
-		return -EINVAL;
-	}
-
-	ops = plh_handle->plh_ops;
-
-	log_val_backup = plh_log_level;
-
-	ret = param_set_int(buf, kp); /* Updates plh_log_level */
-	if (ret < 0) {
-		pr_err("msm_perf: getting new plh_log_level failed, ret=%d\n", ret);
-		return ret;
-	}
-
-	plh_log_level = clamp(plh_log_level, PLH_MIN_LOG_LEVEL, PLH_MAX_LOG_LEVEL);
-	ret = ops->set_plh_log_level(plh_handle, plh_log_level);
-	if (ret < 0) {
-		plh_log_level = log_val_backup;
-		pr_err("msm_perf: setting new plh_log_level failed, ret=%d\n", ret);
-		return ret;
-	}
-	return 0;
-}
-
-static const struct kernel_param_ops param_ops_plh_log_level = {
-	.set = set_plh_log_level,
-	.get = param_get_int,
-};
-module_param_cb(plh_log_level, &param_ops_plh_log_level, &plh_log_level, 0644);
-
-static int init_splh_notif(const char *buf)
-{
-	int i, j, ret;
-	u16 tmp[SPLH_INIT_IPC_FREQ_TBL_PARAMS];
-	u16 *ptmp = tmp, ntokens, nfps, n_ipc_freq_pair, tmp_valid_len = 0;
-	const char *cp, *cp1;
-	struct scmi_plh_vendor_ops *ops;
-
-	/* buf contains the init info from user */
-	if (buf == NULL || !plh_handle || !plh_handle->plh_ops)
-		return -EINVAL;
-
-	cp = buf;
-	ntokens = 0;
-	while ((cp = strpbrk(cp + 1, ":")))
-		ntokens++;
-
-	/* format of cmd nfps, n_ipc_freq_pair, <fps0, <ipc0, freq0>,...>,... */
-	cp = buf;
-	if (sscanf(cp, INIT ":%hu", &nfps)) {
-		if ((nfps != ntokens-1) || (nfps == 0) || (nfps > SPLH_FPS_MAX_CNT))
-			return -EINVAL;
-
-		cp = strnchr(cp, strlen(cp), ':');	/* skip INIT */
-		cp++;
-		cp = strnchr(cp, strlen(cp), ':');	/* skip nfps */
-
-		*ptmp++ = nfps;		/* nfps is first cmd param */
-		tmp_valid_len++;
-		cp1 = cp;
-		ntokens = 0;
-		/* get count of nfps * n_ipc_freq_pair * <ipc freq pair values> */
-		while ((cp1 = strpbrk(cp1 + 1, ",")))
-			ntokens++;
-
-		if (ntokens % (2 * nfps)) /* ipc freq pair values should be multiple of nfps */
-			return -EINVAL;
-
-		n_ipc_freq_pair = ntokens / (2 * nfps); /* ipc_freq pair values for each FPS */
-		if ((n_ipc_freq_pair == 0) || (n_ipc_freq_pair > SPLH_IPC_FREQ_VTBL_MAX_CNT))
-			return -EINVAL;
-
-		*ptmp++ = n_ipc_freq_pair; /* n_ipc_freq_pair is second cmd param */
-		tmp_valid_len++;
-		cp1 = cp;
-		for (i = 0; i < nfps; i++) {
-			if (sscanf(cp1, ":%hu", ptmp) != 1)
-				return -EINVAL;
-
-			ptmp++;		/* increment after storing FPS val */
-			tmp_valid_len++;
-			cp1 = strnchr(cp1, strlen(cp1), ','); /* move to ,ipc */
-			for (j = 0; j < 2 * n_ipc_freq_pair; j++) {
-				if (sscanf(cp1, ",%hu", ptmp) != 1)
-					return -EINVAL;
-
-				ptmp++;	/* increment after storing ipc or freq */
-				tmp_valid_len++;
-				cp1++;
-				if (j != (2 * n_ipc_freq_pair - 1))
-					cp1 = strnchr(cp1, strlen(cp1), ','); /* move to next */
-			}
-
-			if (i != (nfps - 1))
-				cp1 = strnchr(cp1, strlen(cp1), ':'); /* move to next FPS val */
-
-		}
-	} else {
-		return -EINVAL;
-	}
-
-	ops = plh_handle->plh_ops;
-	ret = ops->init_splh_ipc_freq_tbl(plh_handle, tmp, tmp_valid_len);
-	if (ret < 0)
-		return -EINVAL;
-
-	pr_info("msm_perf: nfps=%hu n_ipc_freq_pair=%hu last_freq_val=%hu len=%hu\n",
-		nfps, n_ipc_freq_pair, *--ptmp, tmp_valid_len);
-	splh_init_done = 1;
-	return 0;
+	pr_debug("msm_perf:Init info for scroll :: %s\n", buf);
 }
 
 static void activate_splh_notif(void)
 {
-	int ret;
-	struct scmi_plh_vendor_ops *ops;
-	/* received event notification here */
-	if (!plh_handle || !plh_handle->plh_ops) {
-		pr_err("msm_perf: splh not supported\n");
-		return;
-	}
-	ops = plh_handle->plh_ops;
-
-	if (splh_notif)
-		ret = ops->start_splh(plh_handle, splh_notif); /* splh_notif is fps */
-	else
-		ret = ops->stop_splh(plh_handle);
-
-	if (ret < 0) {
-		pr_err("msm_perf: splh start or stop failed, ret=%d\n", ret);
-		return;
-	}
+	/*received event notification here*/
 }
 
 static int set_splh_notif(const char *buf, const struct kernel_param *kp)
@@ -1092,17 +986,8 @@ static int set_splh_notif(const char *buf, const struct kernel_param *kp)
 	int ret;
 
 	if (strnstr(buf, INIT, sizeof(INIT)) != NULL) {
-		splh_init_done = 0;
-		ret = init_splh_notif(buf);
-		if (ret < 0)
-			pr_err("msm_perf: splh ipc freq tbl init failed, ret=%d\n", ret);
-
-		return ret;
-	}
-
-	if (!splh_init_done) {
-		pr_err("msm_perf: splh ipc freq tbl not initialized\n");
-		return -EINVAL;
+		init_splh_notif(buf);
+		return 0;
 	}
 
 	ret = param_set_int(buf, kp);
@@ -1111,7 +996,7 @@ static int set_splh_notif(const char *buf, const struct kernel_param *kp)
 
 	activate_splh_notif();
 
-	return 0;
+	return ret;
 }
 
 static const struct kernel_param_ops param_ops_splh_notification = {
@@ -1119,8 +1004,8 @@ static const struct kernel_param_ops param_ops_splh_notification = {
 	.get = param_get_int,
 };
 module_param_cb(splh_notif, &param_ops_splh_notification, &splh_notif, 0644);
-#endif /* CONFIG_QTI_PLH */
 
+#endif /* CONFIG_MSM_PERFORMANCE_QGKI */
 static int __init msm_performance_init(void)
 {
 #ifdef CONFIG_MSM_PERFORMANCE_QGKI

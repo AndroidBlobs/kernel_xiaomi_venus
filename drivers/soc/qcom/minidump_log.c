@@ -145,22 +145,21 @@ static DEFINE_SPINLOCK(md_modules_lock);
 
 static void __init register_log_buf(void)
 {
-	char *log_bufp;
-	uint32_t log_buf_len;
+	char **log_bufp;
+	uint32_t *log_buf_lenp;
 	struct md_region md_entry;
 
-	log_bufp = log_buf_addr_get();
-	log_buf_len = log_buf_len_get();
-
-	if (!log_bufp || !log_buf_len) {
-		pr_err("Unable to locate log_buf!\n");
+	log_bufp = (char **)kallsyms_lookup_name("log_buf");
+	log_buf_lenp = (uint32_t *)kallsyms_lookup_name("log_buf_len");
+	if (!log_bufp || !log_buf_lenp) {
+		pr_err("Unable to find log_buf by kallsyms!\n");
 		return;
 	}
 	/*Register logbuf to minidump, first idx would be from bss section */
 	strlcpy(md_entry.name, "KLOGBUF", sizeof(md_entry.name));
-	md_entry.virt_addr = (uintptr_t) log_bufp;
-	md_entry.phys_addr = virt_to_phys(log_bufp);
-	md_entry.size = log_buf_len;
+	md_entry.virt_addr = (uintptr_t) (*log_bufp);
+	md_entry.phys_addr = virt_to_phys(*log_bufp);
+	md_entry.size = *log_buf_lenp;
 	if (msm_minidump_add_region(&md_entry) < 0)
 		pr_err("Failed to add logbuf in Minidump\n");
 }
@@ -190,7 +189,6 @@ static void __init register_kernel_sections(void)
 {
 	struct md_region ksec_entry;
 	char *data_name = "KDATABSS";
-	char *rodata_name = "KROAIDATA";
 	const size_t static_size = __per_cpu_end - __per_cpu_start;
 	void __percpu *base = (void __percpu *)__per_cpu_start;
 	unsigned int cpu;
@@ -201,13 +199,6 @@ static void __init register_kernel_sections(void)
 	ksec_entry.size = roundup((__bss_stop - _sdata), 4);
 	if (msm_minidump_add_region(&ksec_entry) < 0)
 		pr_err("Failed to add data section in Minidump\n");
-
-	strlcpy(ksec_entry.name, rodata_name, sizeof(ksec_entry.name));
-	ksec_entry.virt_addr = (uintptr_t)__start_ro_after_init;
-	ksec_entry.phys_addr = virt_to_phys(__start_ro_after_init);
-	ksec_entry.size = roundup((__end_ro_after_init - __start_ro_after_init), 4);
-	if (msm_minidump_add_region(&ksec_entry) < 0)
-		pr_err("Failed to add rodata section in Minidump\n");
 
 	/* Add percpu static sections */
 	for_each_possible_cpu(cpu) {
@@ -376,7 +367,7 @@ static void update_md_cpu_stack(u32 cpu, u64 sp)
 {
 	struct md_stack_cpu_data *md_stack_cpu_d = &per_cpu(md_stack_data, cpu);
 
-	if (!md_current_stack_init)
+	if (is_idle_task(current) || !md_current_stack_init)
 		return;
 
 	update_md_stack(md_stack_cpu_d->stack_mdr,
@@ -389,8 +380,6 @@ void md_current_stack_notifer(void *ignore, bool preempt,
 	u32 cpu = task_cpu(next);
 	u64 sp = (u64)next->stack;
 
-	if (is_idle_task(next))
-		return;
 	update_md_cpu_stack(cpu, sp);
 }
 
@@ -610,7 +599,7 @@ static void md_register_trace_buf(void)
 	struct md_region md_entry;
 	void *buffer_start;
 
-	buffer_start = kzalloc(MD_FTRACE_BUF_SIZE, GFP_KERNEL);
+	buffer_start = kmalloc(MD_FTRACE_BUF_SIZE, GFP_KERNEL);
 
 	if (!buffer_start)
 		return;
@@ -1257,20 +1246,16 @@ static void md_register_panic_data(void)
 				  &md_meminfo_seq_buf);
 	md_register_panic_entries(MD_SLABINFO_PAGES, "SLABINFO",
 				  &md_slabinfo_seq_buf);
-#ifdef CONFIG_PAGE_OWNER
 	if (is_page_owner_enabled()) {
 		md_register_memory_dump(md_pageowner_dump_size, "PAGEOWNER");
 		debugfs_create_file("page_owner_dump_size_mb", 0400, NULL, NULL,
 			    &proc_page_owner_dump_size_ops);
 	}
-#endif
-#ifdef CONFIG_SLUB_DEBUG
 	if (is_slub_debug_enabled()) {
 		md_register_memory_dump(md_slabowner_dump_size, "SLABOWNER");
 		debugfs_create_file("slab_owner_dump_size_mb", 0400, NULL, NULL,
 			    &proc_slab_owner_dump_size_ops);
 	}
-#endif
 }
 
 #ifdef CONFIG_MODULES

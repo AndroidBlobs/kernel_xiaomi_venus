@@ -176,29 +176,11 @@ config QCOM_LAHAINA_LLCC
 	  can start using the LLCC slices.
 	  If unsure, say n.
 
-config QCOM_SDXLEMUR_LLCC
-	tristate "Qualcomm Technologies, Inc. SDXLEMUR LLCC driver"
-	depends on QCOM_LLCC
-	help
-	  Say y or m here to enable the LLCC driver for SDXLEMUR platform.
-	  This provides data required to configure LLCC so that clients
-	  can start using the LLCC slices.
-	  If unsure, say n.
-
 config QCOM_SHIMA_LLCC
 	tristate "Qualcomm Technologies, Inc. SHIMA LLCC driver"
 	depends on QCOM_LLCC
 	help
 	  Say y or m here to enable the LLCC driver for Shima platform.
-	  This provides data required to configure LLCC so that clients
-	  can start using the LLCC slices.
-	  If unsure, say n.
-
-config QCOM_YUPIK_LLCC
-	tristate "Qualcomm Technologies, Inc. YUPIK LLCC driver"
-	depends on QCOM_LLCC
-	help
-	  Say y or m here to enable the LLCC driver for Yupik platform.
 	  This provides data required to configure LLCC so that clients
 	  can start using the LLCC slices.
 	  If unsure, say n.
@@ -354,16 +336,6 @@ config QCOM_QMI_HELPERS
 	depends on NET
 
 source "drivers/soc/qcom/memshare/Kconfig"
-
-config QCOM_QFPROM_SYS
-	tristate "Qualcomm Technologies, Inc. QFPROM_SYS driver "
-	depends on QCOM_QFPROM
-	help
-	  Qualcomm Technologies, Inc. QFPROM_SYS driver. The QFPROM SYS driver
-	  provides access to the child nodes of QFPROM to user space. The cell
-	  values are exported as sysfs entries.
-
-	  Say y here to enable QFPROM SYS support.
 
 config QCOM_RMTFS_MEM
 	tristate "Qualcomm Remote Filesystem memory driver"
@@ -609,16 +581,6 @@ config MSM_PERFORMANCE
           fmin and fmax. The user space can request  the cpu freq change by
           writing cpu#:freq values
 
-config QTI_PLH
-	bool "Qualcomm Technologies Inc. RIMPS PLH interface"
-	depends on ARM_SCMI_PROTOCOL && MSM_PERFORMANCE
-	default n
-	help
-	  Interface between RIMPS PLH and userspace.
-
-	  This interface is responsible for handling the communication
-	  with RIMPS PLH such as passing tunables, enable and disable.
-
 config MSM_PERFORMANCE_QGKI
 	bool "Enable QGKI features"
         depends on QGKI
@@ -775,19 +737,6 @@ config QTI_SYSTEM_PM
 
 config QTI_SYSTEM_PM_RPM
 	bool
-
-config QTI_PLH_SCMI_CLIENT
-	tristate "Qualcomm Technologies Inc. SCMI client driver for PLH"
-	depends on QTI_PLH
-	default n
-	help
-	  SCMI client driver registers itself with SCMI framework for PLH
-	  vendor protocol, and also registers with the plh interface driver
-	  msm_performance.
-
-	  This driver deliver the PLH vendor protocol handle to interface
-	  driver, and interface driver will use this handle to communicate
-	  with RIMPS PLH.
 
 config QTI_HW_MEMLAT
 	tristate "Qualcomm Technologies Inc. RIMPS memlat interface driver"
@@ -999,8 +948,8 @@ config QCOM_WDOG_BITE_EARLY_PANIC
 config QCOM_WATCHDOG_BARK_TIME
 	depends on QCOM_WDT_CORE
 	int "Qualcomm Technologies, Inc. Watchdog bark time in ms"
-	default 11000
-	range 11000 11000
+	default 20000
+	range 20000 20000
 	help
 	  The amount of time, in milliseconds, that should elapse after
 	  a watchdog timer reset before a bark interrupt is sent from the
@@ -1009,8 +958,8 @@ config QCOM_WATCHDOG_BARK_TIME
 config QCOM_WATCHDOG_PET_TIME
 	depends on QCOM_WDT_CORE
 	int "Qualcomm Technologies, Inc. Watchdog pet time in ms"
-	default 9360
-	range 9360 9360
+	default 15000
+	range 15000 15000
 	help
 	  The amount of time, in milliseconds, that should elapse before
 	  a watchdog pet is initiated to reset the watchdog timer to 0.
@@ -1128,4 +1077,9 @@ config QCOM_RTIC
 	  during the kernel build.
 
 source "drivers/soc/qcom/icnss2/Kconfig"
+config DEBUG_POLICY_STATUS
+	bool "read debug policy status"
+	default n
+	help
+	  This driver read debug policy status using Qualcomm scm_call2 interface
 endmenu

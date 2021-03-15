@@ -8,24 +8,23 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <soc/qcom/cmd-db.h>
-#include <linux/io.h>
 #include "main.h"
 #include "qmi.h"
 #include "debug.h"
 #include "power.h"
 
 static struct icnss_vreg_cfg icnss_wcn6750_vreg_list[] = {
-	{"vdd-cx-mx", 824000, 952000, 0, 0, 0, false, true},
-	{"vdd-1.8-xo", 1872000, 1872000, 0, 0, 0, false, true},
-	{"vdd-1.3-rfa", 1256000, 1352000, 0, 0, 0, false, true},
+	{"vdd-cx-mx", 824000, 952000, 0, 0, 0, false},
+	{"vdd-1.8-xo", 1872000, 1872000, 0, 0, 0, false},
+	{"vdd-1.3-rfa", 1256000, 1352000, 0, 0, 0, false},
 };
 
 static struct icnss_vreg_cfg icnss_adrestea_vreg_list[] = {
-	{"vdd-cx-mx", 752000, 752000, 0, 0, 0, false, true},
-	{"vdd-1.8-xo", 1800000, 1800000, 0, 0, 0, false, true},
-	{"vdd-1.3-rfa", 1304000, 1304000, 0, 0, 0, false, true},
-	{"vdd-3.3-ch1", 3312000, 3312000, 0, 0, 0, false, true},
-	{"vdd-3.3-ch0", 3312000, 3312000, 0, 0, 0, false, true},
+	{"vdd-cx-mx", 752000, 752000, 0, 0, 0, false},
+	{"vdd-1.8-xo", 1800000, 1800000, 0, 0, 0, false},
+	{"vdd-1.3-rfa", 1304000, 1304000, 0, 0, 0, false},
+	{"vdd-3.3-ch1", 3312000, 3312000, 0, 0, 0, false},
+	{"vdd-3.3-ch0", 3312000, 3312000, 0, 0, 0, false},
 };
 
 static struct icnss_clk_cfg icnss_clk_list[] = {
@@ -41,18 +40,10 @@ static struct icnss_clk_cfg icnss_adrestea_clk_list[] = {
 #define ICNSS_CLK_LIST_SIZE		ARRAY_SIZE(icnss_clk_list)
 #define ICNSS_CLK_ADRESTEA_LIST_SIZE	ARRAY_SIZE(icnss_adrestea_clk_list)
 
-#define ICNSS_CHAIN1_REGULATOR                          "vdd-3.3-ch1"
 #define MAX_PROP_SIZE					32
 #define ICNSS_THRESHOLD_HIGH				3600000
 #define ICNSS_THRESHOLD_LOW				3450000
 #define ICNSS_THRESHOLD_GUARD				20000
-
-#define TCS_CMD_DATA_ADDR_OFFSET	0x4
-#define TCS_OFFSET			0xC8
-#define TCS_CMD_OFFSET			0x10
-#define MAX_TCS_NUM			8
-#define MAX_TCS_CMD_NUM			5
-#define BT_CXMX_VOLTAGE_MV		950
 
 static int icnss_get_vreg_single(struct icnss_priv *priv,
 				 struct icnss_vreg_info *vreg)
@@ -339,17 +330,8 @@ static int icnss_vreg_on(struct icnss_priv *priv)
 	int ret = 0;
 
 	list_for_each_entry(vreg, vreg_list, list) {
-		if (IS_ERR_OR_NULL(vreg->reg) || !vreg->cfg.is_supported)
+		if (IS_ERR_OR_NULL(vreg->reg))
 			continue;
-		if (!priv->chain_reg_info_updated &&
-		    !strcmp(ICNSS_CHAIN1_REGULATOR, vreg->cfg.name)) {
-			priv->chain_reg_info_updated = true;
-			if (!priv->is_chain1_supported) {
-				vreg->cfg.is_supported = false;
-				continue;
-			}
-		}
-
 		ret = icnss_vreg_on_single(vreg);
 		if (ret)
 			break;
@@ -818,122 +800,4 @@ int icnss_init_vph_monitor(struct icnss_priv *priv)
 		goto out;
 out:
 	return ret;
-}
-
-int icnss_get_cpr_info(struct icnss_priv *priv)
-{
-	struct platform_device *plat_dev = priv->pdev;
-	struct icnss_cpr_info *cpr_info = &priv->cpr_info;
-	struct resource *res;
-	resource_size_t addr_len;
-	void __iomem *tcs_cmd_base_addr;
-	const char *cmd_db_name;
-	u32 cpr_pmic_addr = 0;
-	int ret = 0;
-
-	res = platform_get_resource_byname(plat_dev, IORESOURCE_MEM, "tcs_cmd");
-	if (!res) {
-		icnss_pr_dbg("TCS CMD address is not present for CPR\n");
-		goto out;
-	}
-
-	ret = of_property_read_string(plat_dev->dev.of_node,
-				      "qcom,cmd_db_name", &cmd_db_name);
-	if (ret) {
-		icnss_pr_dbg("CommandDB name is not present for CPR\n");
-		goto out;
-	}
-
-	cpr_pmic_addr = cmd_db_read_addr(cmd_db_name);
-	if (cpr_pmic_addr > 0) {
-		cpr_info->cpr_pmic_addr = cpr_pmic_addr;
-		icnss_pr_dbg("Get CPR PMIC address 0x%x from %s\n",
-			     cpr_info->cpr_pmic_addr, cmd_db_name);
-	} else {
-		icnss_pr_err("CPR PMIC address is not available for %s\n",
-			     cmd_db_name);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	cpr_info->tcs_cmd_base_addr = res->start;
-	addr_len = resource_size(res);
-	icnss_pr_dbg("TCS CMD base address is %pa with length %pa\n",
-		     &cpr_info->tcs_cmd_base_addr, &addr_len);
-
-	tcs_cmd_base_addr = devm_ioremap_resource(&plat_dev->dev, res);
-	if (IS_ERR(tcs_cmd_base_addr)) {
-		ret = PTR_ERR(tcs_cmd_base_addr);
-		icnss_pr_err("Failed to map TCS CMD address, err = %d\n",
-			     ret);
-		goto out;
-	}
-
-	cpr_info->tcs_cmd_base_addr_io = tcs_cmd_base_addr;
-
-	return 0;
-
-out:
-	return ret;
-}
-
-int icnss_update_cpr_info(struct icnss_priv *priv)
-{
-	struct icnss_cpr_info *cpr_info = &priv->cpr_info;
-	u32 pmic_addr, voltage = 0, voltage_tmp, offset;
-	void __iomem *tcs_cmd_addr, *tcs_cmd_data_addr;
-	int i, j;
-
-	if (cpr_info->tcs_cmd_base_addr == 0) {
-		icnss_pr_dbg("CPR is not enabled\n");
-		return 0;
-	}
-
-	if (cpr_info->voltage == 0 || cpr_info->cpr_pmic_addr == 0) {
-		icnss_pr_err("Voltage %dmV or PMIC address 0x%x is not valid\n",
-			     cpr_info->voltage, cpr_info->cpr_pmic_addr);
-		return -EINVAL;
-	}
-
-	if (cpr_info->tcs_cmd_data_addr_io)
-		goto update_cpr;
-
-	for (i = 0; i < MAX_TCS_NUM; i++) {
-		for (j = 0; j < MAX_TCS_CMD_NUM; j++) {
-			offset = i * TCS_OFFSET + j * TCS_CMD_OFFSET;
-			tcs_cmd_addr = cpr_info->tcs_cmd_base_addr_io + offset;
-			pmic_addr = readl_relaxed(tcs_cmd_addr);
-			if (pmic_addr == cpr_info->cpr_pmic_addr) {
-				tcs_cmd_data_addr = tcs_cmd_addr +
-					TCS_CMD_DATA_ADDR_OFFSET;
-				voltage_tmp = readl_relaxed(tcs_cmd_data_addr);
-				icnss_pr_dbg("Got voltage %dmV from i: %d, j: %d\n",
-					     voltage_tmp, i, j);
-
-				if (voltage_tmp > voltage) {
-					voltage = voltage_tmp;
-					cpr_info->tcs_cmd_data_addr =
-						cpr_info->tcs_cmd_base_addr +
-						offset +
-						TCS_CMD_DATA_ADDR_OFFSET;
-					cpr_info->tcs_cmd_data_addr_io =
-						tcs_cmd_data_addr;
-				}
-			}
-		}
-	}
-
-	if (!cpr_info->tcs_cmd_data_addr_io) {
-		icnss_pr_err("Failed to find proper TCS CMD data address\n");
-		return -EINVAL;
-	}
-
-update_cpr:
-	cpr_info->voltage = cpr_info->voltage > BT_CXMX_VOLTAGE_MV ?
-		cpr_info->voltage : BT_CXMX_VOLTAGE_MV;
-	icnss_pr_dbg("Update TCS CMD data address %pa with voltage %dmV\n",
-		     &cpr_info->tcs_cmd_data_addr, cpr_info->voltage);
-	writel_relaxed(cpr_info->voltage, cpr_info->tcs_cmd_data_addr_io);
-
-	return 0;
 }
