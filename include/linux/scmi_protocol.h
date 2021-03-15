@@ -207,7 +207,6 @@ struct scmi_reset_ops {
 	int (*deassert)(const struct scmi_handle *handle, u32 domain);
 };
 
-#ifdef CONFIG_QTI_SCMI_MEMLAT_PROTOCOL
 /**
  * struct scmi_memlat_vendor_ops - represents the various operations provided
  *	by SCMI HW Memlat Protocol
@@ -264,27 +263,7 @@ struct scmi_memlat_vendor_ops {
 	int (*set_log_level)(const struct scmi_handle *handle, u32 val);
 	int (*get_data)(const struct scmi_handle *handle, u8 *buf);
 };
-#endif
 
-#ifdef CONFIG_QTI_SCMI_PLH_PROTOCOL
-/**
- * struct scmi_plh_vendor_ops - represents the various operations provided
- *	by SCMI PLH Protocol
- *
- * @init_splh_ipc_freq_tbl: initialize scroll plh ipc freq voting table in rimps
- * @start_splh: starts scroll plh in rimps
- * @stop_splh: stops scroll plh in rimps
- * @set_plh_log_level: configure the supported log_level in plh module of rimps
- */
-struct scmi_plh_vendor_ops {
-	int (*init_splh_ipc_freq_tbl)(const struct scmi_handle *handle,
-				u16 *p_init_args, u16 init_len);
-	int (*start_splh)(const struct scmi_handle *handle,	u16 fps);
-	int (*stop_splh)(const struct scmi_handle *handle);
-	int (*set_plh_log_level)(const struct scmi_handle *handle,
-				u16 log_level);
-};
-#endif
 
 /**
  * struct scmi_handle - Handle returned to ARM SCMI clients for usage.
@@ -315,12 +294,7 @@ struct scmi_handle {
 	struct scmi_power_ops *power_ops;
 	struct scmi_sensor_ops *sensor_ops;
 	struct scmi_reset_ops *reset_ops;
-#ifdef CONFIG_QTI_SCMI_MEMLAT_PROTOCOL
 	struct scmi_memlat_vendor_ops *memlat_ops;
-#endif
-#ifdef CONFIG_QTI_SCMI_PLH_PROTOCOL
-	struct scmi_plh_vendor_ops *plh_ops;
-#endif
 	/* for protocol internal use */
 	void *perf_priv;
 	void *clk_priv;
@@ -337,12 +311,7 @@ enum scmi_std_protocol {
 	SCMI_PROTOCOL_CLOCK = 0x14,
 	SCMI_PROTOCOL_SENSOR = 0x15,
 	SCMI_PROTOCOL_RESET = 0x16,
-#ifdef CONFIG_QTI_SCMI_MEMLAT_PROTOCOL
 	SCMI_PROTOCOL_MEMLAT = 0x80,
-#endif
-#ifdef CONFIG_QTI_SCMI_PLH_PROTOCOL
-	SCMI_PROTOCOL_PLH = 0x81,
-#endif
 };
 
 struct scmi_device {

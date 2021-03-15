@@ -53,7 +53,6 @@ struct fscrypt_name {
  */
 #define FS_CFLG_OWN_PAGES (1U << 1)
 
-#ifdef FSCRYPT_NEED_OPS
 /*
  * crypto operations for filesystems
  */
@@ -75,7 +74,6 @@ struct fscrypt_operations {
 	void (*get_devices)(struct super_block *sb,
 			    struct request_queue **devs);
 };
-#endif
 
 static inline bool fscrypt_has_encryption_key(const struct inode *inode)
 {
@@ -99,7 +97,6 @@ static inline bool fscrypt_needs_contents_encryption(const struct inode *inode)
 	return IS_ENCRYPTED(inode) && S_ISREG(inode->i_mode);
 }
 
-#ifdef FSCRYPT_NEED_OPS
 static inline const union fscrypt_context *
 fscrypt_get_dummy_context(struct super_block *sb)
 {
@@ -107,7 +104,6 @@ fscrypt_get_dummy_context(struct super_block *sb)
 		return NULL;
 	return sb->s_cop->get_dummy_context(sb);
 }
-#endif
 
 /*
  * When d_splice_alias() moves a directory's encrypted alias to its decrypted
@@ -805,7 +801,6 @@ static inline int fscrypt_prepare_setattr(struct dentry *dentry,
  * -ENOKEY if the encryption key is missing, or another -errno code if a problem
  * occurred while setting up the encryption key.
  */
-#ifdef FSCRYPT_NEED_OPS
 static inline int fscrypt_prepare_symlink(struct inode *dir,
 					  const char *target,
 					  unsigned int len,
@@ -821,7 +816,6 @@ static inline int fscrypt_prepare_symlink(struct inode *dir,
 		return -ENAMETOOLONG;
 	return 0;
 }
-#endif
 
 /**
  * fscrypt_encrypt_symlink() - encrypt the symlink target if needed
