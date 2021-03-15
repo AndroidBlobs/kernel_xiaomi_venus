@@ -3,6 +3,7 @@
  * xhci-plat.c - xHCI host controller driver platform Bus Glue.
  *
  * Copyright (C) 2012 Texas Instruments Incorporated - http://www.ti.com
+ * Copyright (C) 2020 XiaoMi, Inc.
  * Author: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
  *
  * A lot of code borrowed from the Linux xHCI driver.
@@ -374,10 +375,10 @@ static int xhci_plat_remove(struct platform_device *dev)
 	xhci->xhc_state |= XHCI_STATE_REMOVING;
 
 	usb_remove_hcd(shared_hcd);
+	xhci->shared_hcd = NULL;
 	usb_phy_shutdown(hcd->usb_phy);
 
 	usb_remove_hcd(hcd);
-	xhci->shared_hcd = NULL;
 	usb_put_hcd(shared_hcd);
 
 	clk_disable_unprepare(clk);
@@ -389,67 +390,6 @@ static int xhci_plat_remove(struct platform_device *dev)
 	pm_runtime_set_suspended(&dev->dev);
 
 	return 0;
-}
-
-static int xhci_plat_suspend(struct device *dev)
-{
-	struct usb_hcd  *hcd = dev_get_drvdata(dev);
-	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
-
-	if (!xhci)
-		return 0;
-
-	dev_dbg(dev, "xhci-plat PM suspend\n");
-
-	/* Disable wakeup capability */
-	return xhci_suspend(xhci, false);
-}
-
-static int xhci_plat_resume(struct device *dev)
-{
-	struct usb_hcd  *hcd = dev_get_drvdata(dev);
-	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
-	int ret;
-
-	if (!xhci)
-		return 0;
-
-	dev_dbg(dev, "xhci-plat resume\n");
-
-	ret = xhci_priv_resume_quirk(hcd);
-	if (ret)
-		return ret;
-
-	if (pm_runtime_status_suspended(dev))
-		ret = pm_runtime_resume(dev);
-	else
-		ret = xhci_resume(xhci, false);
-
-	if (ret)
-		dev_err(dev, "failed to resume xhci-plat (%d)\n", ret);
-
-	return ret;
-}
-
-static int xhci_plat_restore(struct device *dev)
-{
-	struct usb_hcd  *hcd = dev_get_drvdata(dev);
-	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
-	int ret;
-
-	if (!xhci)
-		return 0;
-
-	dev_dbg(dev, "xhci-plat PM restore\n");
-
-	ret = xhci_priv_resume_quirk(hcd);
-	if (ret)
-		return ret;
-
-	/* resume from hibernation/power-collapse */
-	ret = xhci_resume(xhci, true);
-
-	return ret;
 }
 
 static int __maybe_unused xhci_plat_runtime_idle(struct device *dev)
@@ -482,6 +422,28 @@ static int __maybe_unused xhci_plat_runtime_suspend(struct device *dev)
 	return xhci_suspend(xhci, true);
 }
 
+static int xhci_plat_resume(struct device *dev)
+{
+	struct usb_hcd  *hcd = dev_get_drvdata(dev);
+	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+	int ret;
+
+	if (!xhci)
+		return 0;
+
+	dev_dbg(dev, "xhci-plat resume\n");
+
+	ret = xhci_priv_resume_quirk(hcd);
+	if (ret)
+		return ret;
+
+	ret = pm_runtime_resume(dev);
+	if (ret)
+		dev_err(dev, "failed to resume xhci-plat (%d)\n", ret);
+
+	return ret;
+}
+
 static int __maybe_unused xhci_plat_runtime_resume(struct device *dev)
 {
 	struct usb_hcd  *hcd = dev_get_drvdata(dev);
@@ -504,12 +466,8 @@ static int __maybe_unused xhci_plat_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops xhci_plat_pm_ops = {
-	.suspend	= xhci_plat_suspend,
-	.resume		= xhci_plat_resume,
-	.freeze		= xhci_plat_suspend,
-	.thaw		= xhci_plat_restore,
-	.poweroff	= xhci_plat_suspend,
-	.restore	= xhci_plat_restore,
+	SET_SYSTEM_SLEEP_PM_OPS(NULL, xhci_plat_resume)
+
 	SET_RUNTIME_PM_OPS(xhci_plat_runtime_suspend,
 			   xhci_plat_runtime_resume,
 			   xhci_plat_runtime_idle)

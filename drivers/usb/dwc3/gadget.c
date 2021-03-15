@@ -3,10 +3,15 @@
  * gadget.c - DesignWare USB3 DRD Controller Gadget Framework Link
  *
  * Copyright (C) 2010-2011 Texas Instruments Incorporated - http://www.ti.com
+ * Copyright (C) 2020 XiaoMi, Inc.
  *
  * Authors: Felipe Balbi <balbi@ti.com>,
  *	    Sebastian Andrzej Siewior <bigeasy@linutronix.de>
  */
+
+#ifdef CONFIG_FACTORY_BUILD
+#define DEBUG
+#endif
 
 #include <linux/kernel.h>
 #include <linux/delay.h>
@@ -32,7 +37,6 @@
 
 static int __dwc3_gadget_start(struct dwc3 *dwc);
 static void dwc3_gadget_disconnect_interrupt(struct dwc3 *dwc);
-static void dwc3_gadget_wakeup_interrupt(struct dwc3 *dwc, bool remote_wakeup);
 
 /**
  * dwc3_gadget_set_test_mode - enables usb2 test modes
@@ -81,7 +85,6 @@ int dwc3_gadget_get_link_state(struct dwc3 *dwc)
 
 	return DWC3_DSTS_USBLNKST(reg);
 }
-EXPORT_SYMBOL(dwc3_gadget_get_link_state);
 
 /**
  * dwc3_gadget_set_link_state - sets usb link to a particular state
@@ -623,7 +626,11 @@ static int dwc3_gadget_start_config(struct dwc3_ep *dep)
 	for (i = 0; i < DWC3_ENDPOINTS_NUM; i++) {
 		struct dwc3_ep *dep = dwc->eps[i];
 
-		if (!dep)
+		/*
+		 * Don't set xfer resource with USB GSI endpoint as it is
+		 * performed before enabling USB GSI endpoint.
+		 */
+		if (!dep || dep->gsi)
 			continue;
 
 		ret = dwc3_gadget_set_xfer_resource(dep);
@@ -797,9 +804,10 @@ out:
 static void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep)
 {
 	struct dwc3_request		*req;
-	int ret = -EINVAL;
 
-	if (dep->number == 0 && dwc->ep0state != EP0_SETUP_PHASE) {
+	dwc3_stop_active_transfer(dep, true, false);
+
+	if (dep->number == 1 && dwc->ep0state != EP0_SETUP_PHASE) {
 		unsigned int dir;
 
 		dbg_log_string("CTRLPEND", dwc->ep0state);
@@ -812,20 +820,6 @@ static void dwc3_remove_requests(struct dwc3 *dwc, struct dwc3_ep *dep)
 		dwc->eps[0]->trb_enqueue = 0;
 		dwc->eps[1]->trb_enqueue = 0;
 	}
-
-	ret = dwc3_stop_active_transfer(dep, true, false);
-	if (ret < 0) {
-		dbg_log_string("transfer not stopped for %s(%d), status:%d",
-				dep->name, dep->number, ret);
-		return;
-	}
-
-	if (dep->flags & DWC3_EP_END_TRANSFER_PENDING)
-		udelay(2000);
-
-	if (dep->flags & DWC3_EP_END_TRANSFER_PENDING)
-		dbg_log_string("ep end_xfer cmd completion timeout for %d",
-				dep->number);
 
 	/* - giveback all requests to gadget driver */
 	while (!list_empty(&dep->started_list)) {
@@ -932,7 +926,7 @@ static int dwc3_gadget_ep_enable(struct usb_ep *ep,
 
 	if (pm_runtime_suspended(dwc->sysdev)) {
 		dev_err(dwc->dev, "fail ep_enable %s device is into LPM\n",
-					dep->name);
+			dep->name);
 		return -EINVAL;
 	}
 
@@ -1925,17 +1919,15 @@ static int dwc3_gadget_get_frame(struct usb_gadget *g)
 	return __dwc3_gadget_get_frame(dwc);
 }
 
-static int dwc3_gadget_remote_wakeup(struct dwc3 *dwc)
+static int __dwc3_gadget_wakeup(struct dwc3 *dwc)
 {
-	int			ret = 0;
-	u32			reg;
-	u8			link_state;
-	unsigned long		flags;
-	bool			link_recover_only = false;
+	int			retries;
 
-	dev_dbg(dwc->dev, "%s(): Entry\n", __func__);
-	disable_irq(dwc->irq);
-	spin_lock_irqsave(&dwc->lock, flags);
+	int			ret;
+	u32			reg;
+
+	u8			link_state;
+
 	/*
 	 * According to the Databook Remote wakeup request should
 	 * be issued only when the device is in early suspend state.
@@ -1945,45 +1937,21 @@ static int dwc3_gadget_remote_wakeup(struct dwc3 *dwc)
 	reg = dwc3_readl(dwc->regs, DWC3_DSTS);
 
 	link_state = DWC3_DSTS_USBLNKST(reg);
+
 	switch (link_state) {
 	case DWC3_LINK_STATE_RESET:
 	case DWC3_LINK_STATE_RX_DET:	/* in HS, means Early Suspend */
 	case DWC3_LINK_STATE_U3:	/* in HS, means SUSPEND */
 	case DWC3_LINK_STATE_RESUME:
 		break;
-	case DWC3_LINK_STATE_U1:
-		if (dwc->gadget.speed != USB_SPEED_SUPER) {
-			link_recover_only = true;
-			break;
-		}
-		fallthrough;
 	default:
-		dev_dbg(dwc->dev, "can't wakeup from link state %d\n",
-				link_state);
-		ret = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
-
-	/* Enable LINK STATUS change event */
-	reg = dwc3_readl(dwc->regs, DWC3_DEVTEN);
-	reg |= DWC3_DEVTEN_ULSTCNGEN;
-	dwc3_writel(dwc->regs, DWC3_DEVTEN, reg);
-	/*
-	 * memory barrier is required to make sure that required events
-	 * with core is enabled before performing RECOVERY mechnism.
-	 */
-	mb();
 
 	ret = dwc3_gadget_set_link_state(dwc, DWC3_LINK_STATE_RECOV);
 	if (ret < 0) {
 		dev_err(dwc->dev, "failed to put link in Recovery\n");
-		/* Disable LINK STATUS change */
-		reg = dwc3_readl(dwc->regs, DWC3_DEVTEN);
-		reg &= ~DWC3_DEVTEN_ULSTCNGEN;
-		dwc3_writel(dwc->regs, DWC3_DEVTEN, reg);
-		/* Required to complete this operation before returning */
-		mb();
-		goto out;
+		return ret;
 	}
 
 	/* Recent versions do this automatically */
@@ -1994,149 +1962,37 @@ static int dwc3_gadget_remote_wakeup(struct dwc3 *dwc)
 		dwc3_writel(dwc->regs, DWC3_DCTL, reg);
 	}
 
-	spin_unlock_irqrestore(&dwc->lock, flags);
-	enable_irq(dwc->irq);
+	/* poll until Link State changes to ON */
+	retries = 20000;
 
-	/*
-	 * Have bigger value (16 sec) for timeout since some host PCs driving
-	 * resume for very long time (e.g. 8 sec)
-	 */
-	ret = wait_event_interruptible_timeout(dwc->wait_linkstate,
-			(dwc->link_state < DWC3_LINK_STATE_U3) ||
-			(dwc->link_state == DWC3_LINK_STATE_SS_DIS),
-			msecs_to_jiffies(16000));
+	while (retries--) {
+		reg = dwc3_readl(dwc->regs, DWC3_DSTS);
 
-	spin_lock_irqsave(&dwc->lock, flags);
-	/* Disable link status change event */
-	reg = dwc3_readl(dwc->regs, DWC3_DEVTEN);
-	reg &= ~DWC3_DEVTEN_ULSTCNGEN;
-	dwc3_writel(dwc->regs, DWC3_DEVTEN, reg);
-	/*
-	 * Complete this write before we go ahead and perform resume
-	 * as we don't need link status change notificaiton anymore.
-	 */
-	mb();
-
-	if (!ret) {
-		dev_dbg(dwc->dev, "Timeout moving into state(%d)\n",
-							dwc->link_state);
-		ret = -EINVAL;
-		spin_unlock_irqrestore(&dwc->lock, flags);
-		goto out1;
-	} else {
-		ret = 0;
-		/*
-		 * If USB is disconnected OR received RESET from host,
-		 * don't perform resume
-		 */
-		if (dwc->link_state == DWC3_LINK_STATE_SS_DIS ||
-				dwc->gadget.state == USB_STATE_DEFAULT)
-			link_recover_only = true;
+		/* in HS, means ON */
+		if (DWC3_DSTS_USBLNKST(reg) == DWC3_LINK_STATE_U0)
+			break;
 	}
 
-	/*
-	 * According to DWC3 databook, the controller does not
-	 * trigger a wakeup event when remote-wakeup is used.
-	 * Hence, after remote-wakeup sequence is complete, and
-	 * the device is back at U0 state, it is required that
-	 * the resume sequence is initiated by SW.
-	 */
-	if (!link_recover_only)
-		dwc3_gadget_wakeup_interrupt(dwc, true);
-
-	spin_unlock_irqrestore(&dwc->lock, flags);
-	dev_dbg(dwc->dev, "%s: Exit\n", __func__);
-	return ret;
-
-out:
-	spin_unlock_irqrestore(&dwc->lock, flags);
-	enable_irq(dwc->irq);
-
-out1:
-	return ret;
-}
-
-#define DWC3_PM_RESUME_RETRIES		20    /* Max Number of retries */
-#define DWC3_PM_RESUME_DELAY		100   /* 100 msec */
-static void dwc3_gadget_remote_wakeup_work(struct work_struct *w)
-{
-	struct dwc3		*dwc;
-	int			ret;
-	static int		retry_count;
-
-	dwc = container_of(w, struct dwc3, remote_wakeup_work);
-
-	ret = pm_runtime_get_sync(dwc->dev);
-	if (ret) {
-		/* pm_runtime_get_sync returns -EACCES error between
-		 * late_suspend and early_resume, wait for system resume to
-		 * finish and queue work again
-		 */
-		dev_dbg(dwc->dev, "PM runtime get sync failed, ret %d\n", ret);
-		if (ret == -EACCES) {
-			pm_runtime_put_noidle(dwc->dev);
-			if (retry_count == DWC3_PM_RESUME_RETRIES) {
-				retry_count = 0;
-				dev_err(dwc->dev, "pm_runtime_get_sync timed out\n");
-				return;
-			}
-			msleep(DWC3_PM_RESUME_DELAY);
-			retry_count++;
-			schedule_work(&dwc->remote_wakeup_work);
-			return;
-		}
+	if (DWC3_DSTS_USBLNKST(reg) != DWC3_LINK_STATE_U0) {
+		dev_err(dwc->dev, "failed to send remote wakeup\n");
+		return -EINVAL;
 	}
-	retry_count = 0;
-	dbg_event(0xFF, "Gdgwake gsyn",
-		atomic_read(&dwc->dev->power.usage_count));
 
-	ret = dwc3_gadget_remote_wakeup(dwc);
-	if (ret)
-		dev_err(dwc->dev, "Remote wakeup failed. ret = %d\n", ret);
-
-	pm_runtime_put_noidle(dwc->dev);
-	dbg_event(0xFF, "Gdgwake put",
-		atomic_read(&dwc->dev->power.usage_count));
+	return 0;
 }
 
 static int dwc3_gadget_wakeup(struct usb_gadget *g)
 {
 	struct dwc3		*dwc = gadget_to_dwc(g);
-	unsigned long	flags;
+	unsigned long		flags;
+	int			ret;
 
 	spin_lock_irqsave(&dwc->lock, flags);
-	if (!dwc->is_remote_wakeup_enabled) {
-		spin_unlock_irqrestore(&dwc->lock, flags);
-		dbg_log_string("remote wakeup not supported\n");
-		return -EINVAL;
-	}
-
+	ret = __dwc3_gadget_wakeup(dwc);
 	spin_unlock_irqrestore(&dwc->lock, flags);
-	schedule_work(&dwc->remote_wakeup_work);
-	return 0;
-}
-
-#ifdef CONFIG_USB_FUNC_WAKEUP_SUPPORTED
-static int dwc_gadget_func_wakeup(struct usb_gadget *g, int interface_id)
-{
-	int ret = 0;
-	struct dwc3 *dwc = gadget_to_dwc(g);
-
-	if (dwc3_gadget_is_suspended(dwc)) {
-		dev_dbg(dwc->dev, "USB bus is suspended, scheduling wakeup\n");
-		dwc3_gadget_wakeup(&dwc->gadget);
-		return -EAGAIN;
-	}
-
-	ret = dwc3_send_gadget_generic_command(dwc, DWC3_DGCMD_XMIT_DEV,
-			0x1 | (interface_id << 4));
-	if (ret)
-		dev_err(dwc->dev, "Function wakeup HW command failed, ret %d\n",
-				ret);
 
 	return ret;
 }
-#endif
 
 static int dwc3_gadget_set_selfpowered(struct usb_gadget *g,
 		int is_selfpowered)
@@ -2204,16 +2060,8 @@ done:
 	/* phy sync delay as per data book */
 	msleep(50);
 
-	/*
-	 * Soft reset clears the block on the doorbell,
-	 * set it back to prevent unwanted writes to the doorbell.
-	 */
-	dwc3_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_CLEAR_DB, 0);
-
 	return 0;
 }
-
-#define MIN_RUN_STOP_DELAY_MS 50
 
 static int dwc3_gadget_run_stop(struct dwc3 *dwc, int is_on, int suspend)
 {
@@ -2324,13 +2172,12 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	struct dwc3		*dwc = gadget_to_dwc(g);
 	unsigned long		flags;
 	int			ret;
-	ktime_t			diff;
 
 	is_on = !!is_on;
 	dwc->softconnect = is_on;
 
 	if (((dwc->dr_mode > USB_DR_MODE_HOST) && !dwc->vbus_active)
-			|| !dwc->gadget_driver || dwc->err_evt_seen) {
+			|| !dwc->gadget_driver) {
 		/*
 		 * Need to wait for vbus_session(on) from otg driver or to
 		 * the udc_start.
@@ -2342,15 +2189,6 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	pm_runtime_get_sync(dwc->dev);
 	dbg_event(0xFF, "Pullup gsync",
 		atomic_read(&dwc->dev->power.usage_count));
-
-	diff = ktime_sub(ktime_get(), dwc->last_run_stop);
-	if (ktime_to_ms(diff) < MIN_RUN_STOP_DELAY_MS) {
-		dbg_event(0xFF, "waitBefRun_Stop",
-			  MIN_RUN_STOP_DELAY_MS - ktime_to_ms(diff));
-		msleep(MIN_RUN_STOP_DELAY_MS - ktime_to_ms(diff));
-	}
-
-	dwc->last_run_stop = ktime_get();
 
 	/*
 	 * Per databook, when we want to stop the gadget, if a control transfer
@@ -2374,11 +2212,6 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	/* prevent pending bh to run later */
 	flush_work(&dwc->bh_work);
 
-	if (is_on)
-		dwc3_device_core_soft_reset(dwc);
-
-	dwc3_notify_event(dwc, DWC3_CONTROLLER_PULLUP, is_on);
-
 	spin_lock_irqsave(&dwc->lock, flags);
 	if (dwc->ep0state != EP0_SETUP_PHASE)
 		dbg_event(0xFF, "EP0 is not in SETUP phase\n", dwc->ep0state);
@@ -2394,15 +2227,8 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	ret = dwc3_gadget_run_stop(dwc, is_on, false);
 	spin_unlock_irqrestore(&dwc->lock, flags);
 	if (!is_on && ret == -ETIMEDOUT) {
-		/*
-		 * If we fail to stop the controller then mark it as an error
-		 * event since it can lead the controller to go into an unknown
-		 * state.
-		 */
-		dbg_log_string("%s: error event seen\n", __func__);
-		dwc->err_evt_seen = true;
-		dwc3_notify_event(dwc, DWC3_CONTROLLER_ERROR_EVENT, 0);
-		dwc3_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_CLEAR_DB, 0);
+		dev_err(dwc->dev, "%s: Core soft reset...\n", __func__);
+		ret = dwc3_device_core_soft_reset(dwc);
 	}
 	enable_irq(dwc->irq);
 
@@ -2410,7 +2236,7 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	pm_runtime_put_autosuspend(dwc->dev);
 	dbg_event(0xFF, "Pullup put",
 		atomic_read(&dwc->dev->power.usage_count));
-	return 0;
+	return ret;
 }
 
 static void dwc3_gadget_enable_irq(struct dwc3 *dwc)
@@ -2647,7 +2473,6 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	}
 
 	dwc->gadget_driver	= driver;
-	dwc->is_remote_wakeup_enabled = false;
 
 	/*
 	 * For DRD, this might get called by gadget driver during bootup
@@ -2679,7 +2504,6 @@ static int dwc3_gadget_stop(struct usb_gadget *g)
 
 	spin_lock_irqsave(&dwc->lock, flags);
 	dwc->gadget_driver	= NULL;
-	dwc->is_remote_wakeup_enabled = false;
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
 	dbg_event(0xFF, "fwq_started", 0);
@@ -2792,9 +2616,6 @@ static void __maybe_unused dwc3_gadget_set_speed(struct usb_gadget *g,
 static const struct usb_gadget_ops dwc3_gadget_ops = {
 	.get_frame		= dwc3_gadget_get_frame,
 	.wakeup			= dwc3_gadget_wakeup,
-#ifdef CONFIG_USB_FUNC_WAKEUP_SUPPORTED
-	.func_wakeup		= dwc_gadget_func_wakeup,
-#endif
 	.set_selfpowered	= dwc3_gadget_set_selfpowered,
 	.vbus_session		= dwc3_gadget_vbus_session,
 	.vbus_draw		= dwc3_gadget_vbus_draw,
@@ -2808,6 +2629,7 @@ static const struct usb_gadget_ops dwc3_gadget_ops = {
 
 #define NUM_GSI_OUT_EPS	1
 #define NUM_GSI_IN_EPS	2
+
 
 static int dwc3_gadget_init_control_endpoint(struct dwc3_ep *dep)
 {
@@ -2912,16 +2734,12 @@ static int dwc3_gadget_init_endpoints(struct dwc3 *dwc, u8 total)
 		/* Reserve EPs at the end for GSI */
 		if (!dep->direction && num >
 				out_count - NUM_GSI_OUT_EPS - 1) {
-			/* Allocation of TRBs are handled by GSI EP ops. */
-			dwc3_free_trb_pool(dep);
 			idx = num - (out_count - NUM_GSI_OUT_EPS - 1);
 			snprintf(dep->name, sizeof(dep->name), "gsi-epout%d",
 					idx);
 			dep->gsi = true;
 		} else if (dep->direction && num >
 				in_count - NUM_GSI_IN_EPS - 1) {
-			/* Allocation of TRBs are handled by GSI EP ops. */
-			dwc3_free_trb_pool(dep);
 			idx = num - (in_count - NUM_GSI_IN_EPS - 1);
 			snprintf(dep->name, sizeof(dep->name), "gsi-epin%d",
 					idx);
@@ -3307,7 +3125,7 @@ static void dwc3_reset_gadget(struct dwc3 *dwc)
 	}
 }
 
-int dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force, bool interrupt)
+void dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force, bool interrupt)
 {
 	struct dwc3 *dwc = dep->dwc;
 	struct dwc3_gadget_ep_cmd_params params;
@@ -3316,7 +3134,7 @@ int dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force, bool interrupt)
 
 	if (!(dep->flags & DWC3_EP_TRANSFER_STARTED) ||
 	    (dep->flags & DWC3_EP_END_TRANSFER_PENDING))
-		return 0;
+		return;
 
 	dwc3_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_DISABLE_UPDXFER,
 			dep->number);
@@ -3370,8 +3188,6 @@ int dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force, bool interrupt)
 
 	if (dwc3_is_usb31(dwc) || dwc->revision < DWC3_REVISION_310A)
 		udelay(100);
-
-	return ret;
 }
 EXPORT_SYMBOL(dwc3_stop_active_transfer);
 
@@ -3422,7 +3238,6 @@ static void dwc3_gadget_disconnect_interrupt(struct dwc3 *dwc)
 	usb_gadget_set_state(&dwc->gadget, USB_STATE_NOTATTACHED);
 
 	dwc->connected = false;
-	wake_up_interruptible(&dwc->wait_linkstate);
 }
 
 static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
@@ -3507,8 +3322,6 @@ static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
 
 	dwc->gadget.speed = USB_SPEED_UNKNOWN;
 	dwc->link_state = DWC3_LINK_STATE_U0;
-	dwc->is_remote_wakeup_enabled = false;
-	wake_up_interruptible(&dwc->wait_linkstate);
 }
 
 static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
@@ -3641,7 +3454,7 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 	 */
 }
 
-static void dwc3_gadget_wakeup_interrupt(struct dwc3 *dwc, bool remote_wakeup)
+static void dwc3_gadget_wakeup_interrupt(struct dwc3 *dwc)
 {
 	enum dwc3_link_state link_state = dwc->link_state;
 
@@ -3649,7 +3462,7 @@ static void dwc3_gadget_wakeup_interrupt(struct dwc3 *dwc, bool remote_wakeup)
 	dwc->link_state = DWC3_LINK_STATE_U0;
 
 	/* For L1 resume case, don't perform resume */
-	if (!remote_wakeup && link_state != DWC3_LINK_STATE_U3)
+	if (link_state != DWC3_LINK_STATE_U3)
 		return;
 
 	/* Handle bus resume case */
@@ -3755,9 +3568,7 @@ static void dwc3_gadget_linksts_change_interrupt(struct dwc3 *dwc,
 	}
 
 	dev_dbg(dwc->dev, "Going from (%d)--->(%d)\n", dwc->link_state, next);
-	dbg_log_string("link state from %d to %d", dwc->link_state, next);
 	dwc->link_state = next;
-	wake_up_interruptible(&dwc->wait_linkstate);
 }
 
 static void dwc3_gadget_suspend_interrupt(struct dwc3 *dwc,
@@ -3834,7 +3645,7 @@ static void dwc3_gadget_interrupt(struct dwc3 *dwc,
 		dwc->dbg_gadget_events.connect++;
 		break;
 	case DWC3_DEVICE_EVENT_WAKEUP:
-		dwc3_gadget_wakeup_interrupt(dwc, false);
+		dwc3_gadget_wakeup_interrupt(dwc);
 		dwc->dbg_gadget_events.wakeup++;
 		break;
 	case DWC3_DEVICE_EVENT_HIBER_REQ:
@@ -4122,7 +3933,7 @@ int dwc3_gadget_init(struct dwc3 *dwc)
 	}
 
 	dwc->irq_gadget = irq;
-	INIT_WORK(&dwc->remote_wakeup_work, dwc3_gadget_remote_wakeup_work);
+
 	dwc->ep0_trb = dma_alloc_coherent(dwc->sysdev,
 					  sizeof(*dwc->ep0_trb) * 2,
 					  &dwc->ep0_trb_addr, GFP_KERNEL);

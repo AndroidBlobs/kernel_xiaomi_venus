@@ -3,10 +3,15 @@
  * core.c - DesignWare USB3 DRD Controller Core file
  *
  * Copyright (C) 2010-2011 Texas Instruments Incorporated - http://www.ti.com
+ * Copyright (C) 2020 XiaoMi, Inc.
  *
  * Authors: Felipe Balbi <balbi@ti.com>,
  *	    Sebastian Andrzej Siewior <bigeasy@linutronix.de>
  */
+
+#ifdef CONFIG_FACTORY_BUILD
+#define DEBUG
+#endif
 
 #include <linux/clk.h>
 #include <linux/version.h>
@@ -40,6 +45,9 @@
 #include "debug.h"
 
 #define DWC3_DEFAULT_AUTOSUSPEND_DELAY	500 /* ms */
+
+
+
 
 static int count;
 static struct dwc3 *dwc3_instance[DWC_CTRL_COUNT];
@@ -1622,7 +1630,6 @@ static int dwc3_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, dwc);
 
-	init_waitqueue_head(&dwc->wait_linkstate);
 	spin_lock_init(&dwc->lock);
 
 	pm_runtime_no_callbacks(dev);
@@ -1682,7 +1689,7 @@ static int dwc3_probe(struct platform_device *pdev)
 
 	snprintf(dma_ipc_log_ctx_name, sizeof(dma_ipc_log_ctx_name),
 					"%s.ep_events", dev_name(dwc->dev));
-	dwc->dwc_dma_ipc_log_ctxt = ipc_log_context_create(2 * NUM_LOG_PAGES,
+	dwc->dwc_dma_ipc_log_ctxt = ipc_log_context_create(NUM_LOG_PAGES,
 						dma_ipc_log_ctx_name, 0);
 	if (!dwc->dwc_dma_ipc_log_ctxt)
 		dev_err(dwc->dev, "Error getting ipc_log_ctxt for ep_events\n");
@@ -1725,8 +1732,6 @@ static int dwc3_remove(struct platform_device *pdev)
 
 	ipc_log_context_destroy(dwc->dwc_ipc_log_ctxt);
 	dwc->dwc_ipc_log_ctxt = NULL;
-	ipc_log_context_destroy(dwc->dwc_dma_ipc_log_ctxt);
-	dwc->dwc_dma_ipc_log_ctxt = NULL;
 	count--;
 	dwc3_instance[dwc->index] = NULL;
 
@@ -2005,8 +2010,7 @@ static int dwc3_resume(struct device *dev)
 		 * state as active to reflect actual state of device which
 		 * is now out of LPM. This allows runtime_suspend later.
 		 */
-		if (dwc->current_dr_role == DWC3_GCTL_PRTCAP_HOST &&
-					pm_runtime_status_suspended(dev))
+		if (dwc->current_dr_role == DWC3_GCTL_PRTCAP_HOST)
 			pm_runtime_resume(dev);
 
 		return 0;
