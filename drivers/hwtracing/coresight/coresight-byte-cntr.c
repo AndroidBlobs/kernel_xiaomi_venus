@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
  *
  * Description: CoreSight Trace Memory Controller driver
  */
@@ -553,9 +554,10 @@ void usb_bypass_notifier(void *priv, unsigned int event,
 	if (!drvdata)
 		return;
 
-	if (tmcdrvdata->out_mode != TMC_ETR_OUT_MODE_USB) {
-		dev_err_ratelimited(&tmcdrvdata->csdev->dev,
-		"%s: ETR is not USB mode\n", __func__);
+	if (tmcdrvdata->out_mode != TMC_ETR_OUT_MODE_USB
+				|| tmcdrvdata->mode == CS_MODE_DISABLED) {
+		dev_err(&tmcdrvdata->csdev->dev,
+		"%s: ETR is not USB mode, or ETR is disabled.\n", __func__);
 		return;
 	}
 
@@ -570,11 +572,6 @@ void usb_bypass_notifier(void *priv, unsigned int event,
 		break;
 
 	case USB_QDSS_DISCONNECT:
-		if (tmcdrvdata->mode == CS_MODE_DISABLED) {
-			dev_err_ratelimited(&tmcdrvdata->csdev->dev,
-			 "%s: ETR is disabled.\n", __func__);
-			return;
-		}
 		usb_bypass_stop(drvdata);
 		flush_work(&(drvdata->read_work));
 		usb_qdss_free_req(tmcdrvdata->usbch);

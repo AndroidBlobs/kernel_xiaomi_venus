@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2020, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
  */
 
 #define pr_fmt(fmt) "arm-memlat-mon: " fmt
@@ -357,6 +358,9 @@ static void memlat_monitor_work(struct work_struct *work)
 	struct memlat_mon *mon;
 	unsigned int i;
 
+	if(oops_in_progress)
+		return;
+
 	mutex_lock(&cpu_grp->mons_lock);
 	if (!cpu_grp->num_active_mons)
 		goto unlock_out;
@@ -657,13 +661,8 @@ static void stop_hwmon(struct memlat_hwmon *hw)
 		unsigned int idx = cpu - cpumask_first(&mon->cpus);
 		struct dev_stats *devstats = to_devstats(mon, cpu);
 
-		if (mon->miss_ev) {
+		if (mon->miss_ev)
 			delete_event(&mon->miss_ev[idx]);
-			if (mon->wb_ev)
-				delete_event(&mon->wb_ev[idx]);
-			if (mon->access_ev)
-				delete_event(&mon->access_ev[idx]);
-		}
 		devstats->inst_count = 0;
 		devstats->mem_count = 0;
 		devstats->freq = 0;

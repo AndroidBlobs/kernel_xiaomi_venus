@@ -893,7 +893,6 @@ static void fast_smmu_reserve_pci_windows(struct device *dev,
 		start = (start - mapping->base) >> FAST_PAGE_SHIFT;
 		end = (end - mapping->base) >> FAST_PAGE_SHIFT;
 		bitmap_set(mapping->bitmap, start, end - start);
-		bitmap_set(mapping->clean_bitmap, start, end - start);
 	}
 	spin_unlock_irqrestore(&mapping->lock, flags);
 }

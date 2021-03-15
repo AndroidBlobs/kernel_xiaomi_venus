@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2014, 2016-2020 The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
  */
 
 #include <linux/gpio/driver.h>
@@ -16,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/spmi.h>
 #include <linux/types.h>
+
 
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 
@@ -781,6 +783,8 @@ static const struct gpio_chip pmic_gpio_gpio_template = {
 	.dbg_show		= pmic_gpio_dbg_show,
 };
 
+
+
 static int pmic_gpio_populate(struct pmic_gpio_state *state,
 			      struct pmic_gpio_pad *pad)
 {
@@ -1159,9 +1163,6 @@ static const struct of_device_id pmic_gpio_of_match[] = {
 	{ .compatible = "qcom,pm6350-gpio", .data = (void *) 9 },
 	{ .compatible = "qcom,pm6150l-gpio", .data = (void *) 12 },
 	{ .compatible = "qcom,pmx65-gpio", .data = (void *) 16 },
-	{ .compatible = "qcom,pmd9650-gpio", .data = (void *) 12 },
-	{ .compatible = "qcom,pm7325-gpio", .data = (void *) 10 },
-	{ .compatible = "qcom,pm7325b-gpio", .data = (void *) 8 },
 	{ },
 };
 

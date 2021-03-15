@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved. */
+/* Copyright (C) 2020 XiaoMi, Inc. */
 
 #include <linux/firmware.h>
 #include <linux/module.h>
 #include <linux/soc/qcom/qmi.h>
+#include <linux/hwid.h>
 
 #include "bus.h"
 #include "debug.h"
@@ -15,6 +17,9 @@
 #define BDF_FILE_NAME_PREFIX		"bdwlan"
 #define ELF_BDF_FILE_NAME		"bdwlan.elf"
 #define ELF_BDF_FILE_NAME_PREFIX	"bdwlan.e"
+
+#define ELF_BDF_FILE_NAME_K2		 "bd_k2.elf"
+
 #define BIN_BDF_FILE_NAME		"bdwlan.bin"
 #define BIN_BDF_FILE_NAME_PREFIX	"bdwlan.b"
 #define REGDB_FILE_NAME			"regdb.bin"
@@ -482,11 +487,26 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 {
 	char filename_tmp[MAX_FIRMWARE_NAME_LEN];
 	int ret = 0;
+	int hw_platform_ver = -1;
+	uint32_t hw_country_ver = 0;
+#ifdef CONFIG_QGKI_SYSTEM
+	hw_country_ver = get_hw_country_version();
+	hw_platform_ver = get_hw_version_platform();
+#else
+	hw_platform_ver = -1;
+	hw_country_ver = 0;
+#endif
+
 
 	switch (bdf_type) {
 	case CNSS_BDF_ELF:
-		if (plat_priv->board_info.board_id == 0xFF)
-			snprintf(filename_tmp, filename_len, ELF_BDF_FILE_NAME);
+		if (plat_priv->board_info.board_id == 0xFF) {
+			if (hw_platform_ver == HARDWARE_PROJECT_K2) {
+				snprintf(filename_tmp, filename_len, ELF_BDF_FILE_NAME_K2);
+			} else {
+				snprintf(filename_tmp, filename_len, ELF_BDF_FILE_NAME);
+			}
+		}
 		else if (plat_priv->board_info.board_id < 0xFF)
 			snprintf(filename_tmp, filename_len,
 				 ELF_BDF_FILE_NAME_PREFIX "%02x",
@@ -1660,9 +1680,6 @@ int cnss_wlfw_get_info_send_sync(struct cnss_plat_data *plat_priv, int type,
 	struct qmi_txn txn;
 	int ret = 0;
 
-	cnss_pr_buf("Sending get info message, type: %d, cmd length: %d, state: 0x%lx\n",
-		    type, cmd_len, plat_priv->driver_state);
-
 	if (cmd_len > QMI_WLFW_MAX_DATA_SIZE_V01)
 		return -EINVAL;
 
@@ -1725,6 +1742,8 @@ out:
 
 unsigned int cnss_get_qmi_timeout(struct cnss_plat_data *plat_priv)
 {
+	cnss_pr_dbg("QMI timeout is %u ms\n", QMI_WLFW_TIMEOUT_MS);
+
 	return QMI_WLFW_TIMEOUT_MS;
 }
 
@@ -1917,73 +1936,63 @@ static void cnss_wlfw_qdss_trace_req_mem_ind_cb(struct qmi_handle *qmi_wlfw,
 			       0, NULL);
 }
 
-/**
- * cnss_wlfw_fw_mem_file_save_ind_cb: Save given FW mem to filesystem
- *
- * QDSS_TRACE_SAVE_IND feature is overloaded to provide any host allocated
- * fw memory segment for dumping to file system. Only one type of mem can be
- * saved per indication and is provided in mem seg index 0.
- *
- * Return: None
- */
-static void cnss_wlfw_fw_mem_file_save_ind_cb(struct qmi_handle *qmi_wlfw,
-					      struct sockaddr_qrtr *sq,
-					      struct qmi_txn *txn,
-					      const void *data)
+static void cnss_wlfw_qdss_trace_save_ind_cb(struct qmi_handle *qmi_wlfw,
+					     struct sockaddr_qrtr *sq,
+					     struct qmi_txn *txn,
+					     const void *data)
 {
 	struct cnss_plat_data *plat_priv =
 		container_of(qmi_wlfw, struct cnss_plat_data, qmi_wlfw);
 	const struct wlfw_qdss_trace_save_ind_msg_v01 *ind_msg = data;
-	struct cnss_qmi_event_fw_mem_file_save_data *event_data;
+	struct cnss_qmi_event_qdss_trace_save_data *event_data;
 	int i = 0;
 
-	if (!txn || !data) {
+	cnss_pr_dbg("Received QMI WLFW QDSS trace save indication\n");
+
+	if (!txn) {
 		cnss_pr_err("Spurious indication\n");
 		return;
 	}
-	cnss_pr_dbg("QMI fw_mem_file_save: source: %d  mem_seg: %d type: %u len: %u\n",
-		    ind_msg->source, ind_msg->mem_seg_valid,
-		    ind_msg->mem_seg[0].type, ind_msg->mem_seg_len);
-	if (ind_msg->source == 1 || !ind_msg->mem_seg_valid ||
-	    !ind_msg->mem_seg_len ||
-	    ind_msg->mem_seg_len > QMI_WLFW_MAX_STR_LEN_V01) {
-		cnss_pr_err("Invalid FW mem file save indication\n");
+
+	cnss_pr_dbg("QDSS_trace_save info: source %u, total_size %u, file_name_valid %u, file_name %s\n",
+		    ind_msg->source, ind_msg->total_size,
+		    ind_msg->file_name_valid, ind_msg->file_name);
+
+	if (ind_msg->source == 1)
 		return;
-	}
 
 	event_data = kzalloc(sizeof(*event_data), GFP_KERNEL);
 	if (!event_data)
 		return;
 
-	event_data->mem_type = ind_msg->mem_seg[0].type;
-	event_data->mem_seg_len = ind_msg->mem_seg_len;
-	event_data->total_size = ind_msg->total_size;
-
-	for (i = 0; i < ind_msg->mem_seg_len; i++) {
-		event_data->mem_seg[i].addr = ind_msg->mem_seg[i].addr;
-		event_data->mem_seg[i].size = ind_msg->mem_seg[i].size;
-		if (event_data->mem_type != ind_msg->mem_seg[i].type) {
-			cnss_pr_err("FW Mem file save ind cannot have multiple mem types\n");
+	if (ind_msg->mem_seg_valid) {
+		if (ind_msg->mem_seg_len > QDSS_TRACE_SEG_LEN_MAX) {
+			cnss_pr_err("Invalid seg len %u\n",
+				    ind_msg->mem_seg_len);
 			goto free_event_data;
 		}
-		cnss_pr_dbg("seg-%d: addr 0x%llx size 0x%x\n",
-			    i, ind_msg->mem_seg[i].addr,
-			    ind_msg->mem_seg[i].size);
+		cnss_pr_dbg("QDSS_trace_save seg len %u\n",
+			    ind_msg->mem_seg_len);
+		event_data->mem_seg_len = ind_msg->mem_seg_len;
+		for (i = 0; i < ind_msg->mem_seg_len; i++) {
+			event_data->mem_seg[i].addr = ind_msg->mem_seg[i].addr;
+			event_data->mem_seg[i].size = ind_msg->mem_seg[i].size;
+			cnss_pr_dbg("seg-%d: addr 0x%llx size 0x%x\n",
+				    i, ind_msg->mem_seg[i].addr,
+				    ind_msg->mem_seg[i].size);
+		}
 	}
 
-	if (ind_msg->file_name_valid) {
+	event_data->total_size = ind_msg->total_size;
+
+	if (ind_msg->file_name_valid)
 		strlcpy(event_data->file_name, ind_msg->file_name,
-			QMI_WLFW_MAX_STR_LEN_V01 + 1);
-	} else {
-		if (event_data->mem_type == QMI_WLFW_MEM_QDSS_V01)
-			strlcpy(event_data->file_name, "qdss_trace",
-				QMI_WLFW_MAX_STR_LEN_V01 + 1);
-		else
-			strlcpy(event_data->file_name, "fw_mem_dump",
-				QMI_WLFW_MAX_STR_LEN_V01 + 1);
-	}
+			QDSS_TRACE_FILE_NAME_MAX + 1);
+	else
+		strlcpy(event_data->file_name, "qdss_trace",
+			QDSS_TRACE_FILE_NAME_MAX + 1);
 
-	cnss_driver_event_post(plat_priv, CNSS_DRIVER_EVENT_FW_MEM_FILE_SAVE,
+	cnss_driver_event_post(plat_priv, CNSS_DRIVER_EVENT_QDSS_TRACE_SAVE,
 			       0, event_data);
 
 	return;
@@ -2013,16 +2022,10 @@ static void cnss_wlfw_respond_get_info_ind_cb(struct qmi_handle *qmi_wlfw,
 		container_of(qmi_wlfw, struct cnss_plat_data, qmi_wlfw);
 	const struct wlfw_respond_get_info_ind_msg_v01 *ind_msg = data;
 
-	cnss_pr_buf("Received QMI WLFW respond get info indication\n");
-
 	if (!txn) {
 		cnss_pr_err("Spurious indication\n");
 		return;
 	}
-
-	cnss_pr_buf("Extract message with event length: %d, type: %d, is last: %d, seq no: %d\n",
-		    ind_msg->data_len, ind_msg->type,
-		    ind_msg->is_last, ind_msg->seq_no);
 
 	if (plat_priv->get_info_cb_ctx && plat_priv->get_info_cb)
 		plat_priv->get_info_cb(plat_priv->get_info_cb_ctx,
@@ -2215,7 +2218,7 @@ static struct qmi_msg_handler qmi_wlfw_msg_handlers[] = {
 		.ei = wlfw_qdss_trace_save_ind_msg_v01_ei,
 		.decoded_size =
 		sizeof(struct wlfw_qdss_trace_save_ind_msg_v01),
-		.fn = cnss_wlfw_fw_mem_file_save_ind_cb
+		.fn = cnss_wlfw_qdss_trace_save_ind_cb
 	},
 	{
 		.type = QMI_INDICATION,
@@ -2483,29 +2486,57 @@ out:
 }
 
 static int cnss_dms_connect_to_server(struct cnss_plat_data *plat_priv,
-				      unsigned int node, unsigned int port)
+				      void *data)
 {
+	struct cnss_qmi_event_server_arrive_data *event_data = data;
 	struct qmi_handle *qmi_dms = &plat_priv->qmi_dms;
 	struct sockaddr_qrtr sq = {0};
 	int ret = 0;
 
+	if (!event_data)
+		return -EINVAL;
+
 	sq.sq_family = AF_QIPCRTR;
-	sq.sq_node = node;
-	sq.sq_port = port;
+	sq.sq_node = event_data->node;
+	sq.sq_port = event_data->port;
+	kfree(data);
 
 	ret = kernel_connect(qmi_dms->sock, (struct sockaddr *)&sq,
 			     sizeof(sq), 0);
 	if (ret < 0) {
-		cnss_pr_err("Failed to connect to QMI DMS remote service Node: %d Port: %d\n",
-			    node, port);
+		cnss_pr_err("Failed to connect to QMI DMS remote service port\n");
 		goto out;
 	}
 
 	set_bit(CNSS_QMI_DMS_CONNECTED, &plat_priv->driver_state);
 	cnss_pr_info("QMI DMS service connected, state: 0x%lx\n",
 		     plat_priv->driver_state);
+	cnss_qmi_get_dms_mac(plat_priv);
 out:
 	return ret;
+}
+
+int cnss_dms_server_arrive(struct cnss_plat_data *plat_priv, void *data)
+{
+	int ret = 0;
+
+	if (!plat_priv) {
+		cnss_pr_err("Platform not initialized on DMS server arrive\n");
+		return -ENODEV;
+	}
+	ret = cnss_dms_connect_to_server(plat_priv, data);
+	return ret;
+}
+
+int cnss_dms_server_exit(struct cnss_plat_data *plat_priv)
+{
+	if (!plat_priv)
+		return -ENODEV;
+
+	clear_bit(CNSS_QMI_DMS_CONNECTED, &plat_priv->driver_state);
+	cnss_pr_info("QMI DMS service disconnected, state: 0x%lx\n",
+		     plat_priv->driver_state);
+	return 0;
 }
 
 static int dms_new_server(struct qmi_handle *qmi_dms,
@@ -2513,12 +2544,22 @@ static int dms_new_server(struct qmi_handle *qmi_dms,
 {
 	struct cnss_plat_data *plat_priv =
 		container_of(qmi_dms, struct cnss_plat_data, qmi_dms);
+	struct cnss_qmi_event_server_arrive_data *event_data;
 
-	if (!service)
-		return -EINVAL;
+	cnss_pr_err("DMS server arriving: node %u port %u\n",
+		    service->node, service->port);
 
-	return cnss_dms_connect_to_server(plat_priv, service->node,
-					  service->port);
+	event_data = kzalloc(sizeof(*event_data), GFP_KERNEL);
+	if (!event_data)
+		return -ENOMEM;
+
+	event_data->node = service->node;
+	event_data->port = service->port;
+
+	cnss_driver_event_post(plat_priv, CNSS_DRIVER_EVENT_DMS_SERVER_ARRIVE,
+			       0, event_data);
+
+	return 0;
 }
 
 static void dms_del_server(struct qmi_handle *qmi_dms,
@@ -2527,9 +2568,9 @@ static void dms_del_server(struct qmi_handle *qmi_dms,
 	struct cnss_plat_data *plat_priv =
 		container_of(qmi_dms, struct cnss_plat_data, qmi_dms);
 
-	clear_bit(CNSS_QMI_DMS_CONNECTED, &plat_priv->driver_state);
-	cnss_pr_info("QMI DMS service disconnected, state: 0x%lx\n",
-		     plat_priv->driver_state);
+	cnss_pr_dbg("DMS server exiting\n");
+	cnss_driver_event_post(plat_priv, CNSS_DRIVER_EVENT_DMS_SERVER_EXIT, 0,
+			       NULL);
 }
 
 static struct qmi_ops qmi_dms_ops = {

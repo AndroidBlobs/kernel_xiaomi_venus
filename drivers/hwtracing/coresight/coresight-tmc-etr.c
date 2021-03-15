@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright(C) 2016 Linaro Limited. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
  * Author: Mathieu Poirier <mathieu.poirier@linaro.org>
  */
 
@@ -214,8 +215,6 @@ static int tmc_pages_alloc(struct tmc_pages *tmc_pages,
 			page = alloc_pages_node(node,
 						GFP_KERNEL | __GFP_ZERO, 0);
 		}
-		if (!page)
-			goto err;
 		paddr = dma_map_page(real_dev, page, 0, PAGE_SIZE, dir);
 		if (dma_mapping_error(real_dev, paddr))
 			goto err;
@@ -1443,8 +1442,41 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 	struct etr_buf *sysfs_buf = NULL, *new_buf = NULL, *free_buf = NULL;
 
+	/*
+	 * If we are enabling the ETR from disabled state, we need to make
+	 * sure we have a buffer with the right size. The etr_buf is not reset
+	 * immediately after we stop the tracing in SYSFS mode as we wait for
+	 * the user to collect the data. We may be able to reuse the existing
+	 * buffer, provided the size matches. Any allocation has to be done
+	 * with the lock released.
+	 */
 	spin_lock_irqsave(&drvdata->spinlock, flags);
-	if (drvdata->reading) {
+	sysfs_buf = READ_ONCE(drvdata->sysfs_buf);
+	if (!sysfs_buf || (sysfs_buf->size != drvdata->size)) {
+		spin_unlock_irqrestore(&drvdata->spinlock, flags);
+
+		if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM ||
+			(drvdata->byte_cntr->sw_usb &&
+			drvdata->out_mode == TMC_ETR_OUT_MODE_USB)) {
+			/*
+			 * ETR DDR memory is not allocated until user enables
+			 * tmc at least once. If user specifies different ETR
+			 * DDR size than the default size or switches between
+			 * contiguous or scatter-gather memory type after
+			 * enabling tmc; the new selection will be honored from
+			 * next tmc enable session.
+			 */
+			/* Allocate memory with the locks released */
+			free_buf = new_buf = tmc_etr_setup_sysfs_buf(drvdata);
+			if (IS_ERR(new_buf))
+				return -ENOMEM;
+			coresight_cti_map_trigout(drvdata->cti_flush, 3, 0);
+			coresight_cti_map_trigin(drvdata->cti_reset, 5, 0);
+		}
+		spin_lock_irqsave(&drvdata->spinlock, flags);
+	}
+
+	if (drvdata->reading || drvdata->mode == CS_MODE_PERF) {
 		ret = -EBUSY;
 		goto unlock_out;
 	}
@@ -1459,48 +1491,18 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 		goto unlock_out;
 	}
 
-	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM
-		|| (drvdata->out_mode == TMC_ETR_OUT_MODE_USB
-			&& drvdata->byte_cntr->sw_usb)) {
-		/*
-		 * If we are enabling the ETR from disabled state, we need to make
-		 * sure we have a buffer with the right size. The etr_buf is not reset
-		 * immediately after we stop the tracing in SYSFS mode as we wait for
-		 * the user to collect the data. We may be able to reuse the existing
-		 * buffer, provided the size matches. Any allocation has to be done
-		 * with the lock released.
-		 */
-		sysfs_buf = READ_ONCE(drvdata->sysfs_buf);
-		if (!sysfs_buf || (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM
-				&& sysfs_buf->size != drvdata->size)
-				|| (drvdata->out_mode == TMC_ETR_OUT_MODE_USB
-				&& drvdata->byte_cntr->sw_usb
-				&&  sysfs_buf->size != TMC_ETR_SW_USB_BUF_SIZE)) {
-
-			spin_unlock_irqrestore(&drvdata->spinlock, flags);
-			/*
-			 * ETR DDR memory is not allocated until user enables
-			 * tmc at least once. If user specifies different ETR
-			 * DDR size than the default size or switches between
-			 * contiguous or scatter-gather memory type after
-			 * enabling tmc; the new selection will be honored from
-			 * next tmc enable session.
-			 */
-			/* Allocate memory with the locks released */
-			new_buf = tmc_etr_setup_sysfs_buf(drvdata);
-			if (IS_ERR(new_buf))
-				return -ENOMEM;
-			spin_lock_irqsave(&drvdata->spinlock, flags);
-		}
-
-		/*
-		 * If we don't have a buffer or it doesn't match the requested size,
-		 * use the buffer allocated above. Otherwise reuse the existing buffer.
-		 */
-		if (new_buf) {
-			free_buf = sysfs_buf;
-			drvdata->sysfs_buf = new_buf;
-		}
+	/*
+	 * If we don't have a buffer or it doesn't match the requested size,
+	 * use the buffer allocated above. Otherwise reuse the existing buffer.
+	 */
+	sysfs_buf = READ_ONCE(drvdata->sysfs_buf);
+	if (!sysfs_buf || (new_buf && sysfs_buf->size != new_buf->size)) {
+		free_buf = sysfs_buf;
+		drvdata->sysfs_buf = new_buf;
+	}
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM ||
+		(drvdata->out_mode == TMC_ETR_OUT_MODE_USB
+	     && drvdata->byte_cntr->sw_usb)) {
 		ret = tmc_etr_enable_hw(drvdata, drvdata->sysfs_buf);
 		if (ret)
 			goto unlock_out;
@@ -1531,20 +1533,6 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	}
 
 	atomic_inc(csdev->refcnt);
-
-	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
-		tmc_etr_byte_cntr_start(drvdata->byte_cntr);
-
-	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM ||
-		(drvdata->byte_cntr->sw_usb &&
-		drvdata->out_mode == TMC_ETR_OUT_MODE_USB)) {
-		coresight_cti_map_trigout(drvdata->cti_flush,
-			drvdata->cti_flush_trig_num, 0);
-		coresight_cti_map_trigin(drvdata->cti_reset,
-			drvdata->cti_reset_trig_num, 0);
-	}
-
-	dev_info(&csdev->dev, "TMC-ETR enabled\n");
 	goto out;
 
 unlock_out:
@@ -1554,6 +1542,13 @@ out:
 	/* Free memory outside the spinlock if need be */
 	if (free_buf)
 		tmc_etr_free_sysfs_buf(free_buf);
+
+	if (!ret) {
+		if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
+			tmc_etr_byte_cntr_start(drvdata->byte_cntr);
+
+		dev_info(&csdev->dev, "TMC-ETR enabled\n");
+	}
 
 	return ret;
 }
@@ -2018,7 +2013,6 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 	/* Complain if we (somehow) got out of sync */
 	WARN_ON_ONCE(drvdata->mode == CS_MODE_DISABLED);
 	if (drvdata->mode != CS_MODE_DISABLED) {
-		drvdata->mode = CS_MODE_DISABLED;
 		if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB) {
 			if (!drvdata->byte_cntr->sw_usb) {
 				__tmc_etr_disable_to_bam(drvdata);
@@ -2027,6 +2021,7 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 				tmc_etr_bam_disable(drvdata);
 				usb_qdss_close(drvdata->usbch);
 				drvdata->usbch = NULL;
+				drvdata->mode = CS_MODE_DISABLED;
 				goto out;
 			} else {
 				spin_unlock_irqrestore(&drvdata->spinlock,
@@ -2038,9 +2033,11 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 		} else {
 			tmc_etr_disable_hw(drvdata);
 		}
+		drvdata->mode = CS_MODE_DISABLED;
 	}
 	/* Dissociate from monitored process. */
 	drvdata->pid = -1;
+	drvdata->mode = CS_MODE_DISABLED;
 	/* Reset perf specific data */
 	drvdata->perf_buf = NULL;
 
@@ -2056,10 +2053,8 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 			flush_workqueue(drvdata->byte_cntr->usb_wq);
 			drvdata->usbch = NULL;
 		}
-		coresight_cti_unmap_trigin(drvdata->cti_reset,
-				drvdata->cti_reset_trig_num, 0);
-		coresight_cti_unmap_trigout(drvdata->cti_flush,
-				drvdata->cti_flush_trig_num, 0);
+		coresight_cti_unmap_trigin(drvdata->cti_reset, 0, 0);
+		coresight_cti_unmap_trigout(drvdata->cti_flush, 3, 0);
 	}
 out:
 	dev_info(&csdev->dev, "TMC-ETR disabled\n");

@@ -257,13 +257,11 @@ static int bt_clk_enable(struct bt_power_clk_data *clk)
 
 	pr_debug("%s: %s\n", __func__, clk->name);
 
-	if (!clk->clk)
-		return -EINVAL;
 	/* Get the clock handle for vreg */
-	if (clk->is_enabled) {
-		pr_warning("%s: node: %p, clk->is_enabled:%d\n",
-			   __func__, clk->clk, clk->is_enabled);
-		return 0;
+	if (!clk->clk || clk->is_enabled) {
+		pr_err("%s: error - node: %p, clk->is_enabled:%d\n",
+			__func__, clk->clk, clk->is_enabled);
+		return -EINVAL;
 	}
 
 	rc = clk_prepare_enable(clk->clk);
@@ -283,13 +281,11 @@ static int bt_clk_disable(struct bt_power_clk_data *clk)
 
 	pr_debug("%s: %s\n", __func__, clk->name);
 
-	if (!clk->clk)
-		return -EINVAL;
 	/* Get the clock handle for vreg */
-	if (!clk->is_enabled) {
-		pr_warning("%s: node: %p, clk->is_enabled:%d\n",
-			   __func__, clk->clk, clk->is_enabled);
-		return 0;
+	if (!clk->clk || !clk->is_enabled) {
+		pr_err("%s: error - node: %p, clk->is_enabled:%d\n",
+			__func__, clk->clk, clk->is_enabled);
+		return -EINVAL;
 	}
 	clk_disable_unprepare(clk->clk);
 
@@ -332,43 +328,35 @@ static int bt_configure_gpios(int on)
 				bt_sw_ctrl_gpio,
 				bt_power_src_status[BT_SW_CTRL_GPIO]);
 		}
-		if (wl_reset_gpio >= 0)
-			pr_info("BTON:Turn Bt On wl-reset-gpio(%d) value(%d)\n",
-				wl_reset_gpio, gpio_get_value(wl_reset_gpio));
+		pr_debug("BTON:Turn Bt On wl-reset-gpio(%d) value(%d)\n",
+			wl_reset_gpio, gpio_get_value(wl_reset_gpio));
 
 		if ((wl_reset_gpio < 0) ||
 			((wl_reset_gpio >= 0) && gpio_get_value(wl_reset_gpio))) {
-			pr_info("%s: BTON: Asserting BT_EN\n", __func__);
 			rc = gpio_direction_output(bt_reset_gpio, 1);
 			if (rc) {
-				pr_err("%s: Unable to set direction\n", __func__);
+				pr_debug("%s: Unable to set direction\n", __func__);
 				return rc;
 			}
-			bt_power_src_status[BT_RESET_GPIO] =
-				gpio_get_value(bt_reset_gpio);
 		}
 		if ((wl_reset_gpio >= 0) && (gpio_get_value(wl_reset_gpio) == 0)) {
 			if (gpio_get_value(bt_reset_gpio)) {
-				pr_info("%s: Wlan Off and BT On too close\n", __func__);
-				pr_info("%s: reset BT_EN, enable it after delay\n", __func__);
+				pr_debug("%s: Wlan Off and BT On too close\n", __func__);
+				pr_debug("%s: reset BT_EN, enable it after delay\n", __func__);
 				rc = gpio_direction_output(bt_reset_gpio, 0);
 				if (rc) {
-					pr_err("%s: Unable to set direction\n", __func__);
+					pr_debug("%s: Unable to set direction\n", __func__);
 					return rc;
 				}
-				bt_power_src_status[BT_RESET_GPIO] =
-					gpio_get_value(bt_reset_gpio);
 			}
-			pr_info("%s:add 100ms delay for AON output to fully discharge\n",
+			pr_debug("%s:add 100ms delay for AON output to fully discharge\n",
 				 __func__);
 			msleep(100);
 			rc = gpio_direction_output(bt_reset_gpio, 1);
 			if (rc) {
-				pr_err("%s: Unable to set direction\n", __func__);
+				pr_debug("%s: Unable to set direction\n", __func__);
 				return rc;
 			}
-			bt_power_src_status[BT_RESET_GPIO] =
-				gpio_get_value(bt_reset_gpio);
 		}
 		msleep(50);
 		/*  Check  if  SW_CTRL  is  asserted  */
@@ -1101,9 +1089,9 @@ static int btpower_get_tcs_table_info(struct platform_device *dev,
 	pr_info("TCS CMD base address is %pa with length %pa\n",
 		    &tcs_table_info->tcs_cmd_base_addr, &addr_len);
 
-	tcs_cmd_base_addr = devm_ioremap(&plat_dev->dev, res->start, addr_len);
-	if (!tcs_cmd_base_addr) {
-		ret = -EINVAL;
+	tcs_cmd_base_addr = devm_ioremap_resource(&plat_dev->dev, res);
+	if (IS_ERR(tcs_cmd_base_addr)) {
+		ret = PTR_ERR(tcs_cmd_base_addr);
 		pr_err("Failed to map TCS CMD address, err = %d\n",
 			    ret);
 		goto out;
@@ -1146,7 +1134,7 @@ static int btpower_enable_ipa_vreg(struct platform_device *dev,
 	writel_relaxed(1, tcs_cmd);
 
 	data_val = readl_relaxed(tcs_cmd);
-	pr_info("Configure S3E TCS Addr for iPA: %x with Data: %d\n"
+	pr_info("Configure S3E TCS Addr : %x with Data: %d\n"
 		, addr_val, data_val);
 	return 0;
 }

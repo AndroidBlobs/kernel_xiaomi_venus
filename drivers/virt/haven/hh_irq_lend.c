@@ -116,8 +116,7 @@ static int hh_irq_lent_nb_handler(struct notifier_block *this,
 	spin_lock_irqsave(&hh_irq_lend_lock, flags);
 	for (label = 0; label < HH_IRQ_LABEL_MAX; label++) {
 		entry = &hh_irq_entries[label];
-		if (entry->state != HH_IRQ_STATE_WAIT_LEND &&
-				entry->state != HH_IRQ_STATE_LENT)
+		if (entry->state != HH_IRQ_STATE_WAIT_LEND)
 			continue;
 
 		if (label == lent->virq_label &&

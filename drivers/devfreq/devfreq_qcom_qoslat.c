@@ -179,7 +179,6 @@ static struct platform_driver devfreq_qcom_qoslat_driver = {
 	.driver = {
 		.name		= "devfreq-qcom-qoslat",
 		.of_match_table = devfreq_qoslat_match_table,
-		.suppress_bind_attrs = true,
 	},
 };
 

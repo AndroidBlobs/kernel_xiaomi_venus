@@ -27,7 +27,6 @@ struct uci_chan {
 	struct list_head pending; /* user space waiting to read */
 	struct uci_buf *cur_buf; /* current buffer user space reading */
 	size_t rx_size;
-	struct mutex chan_lock;
 };
 
 struct uci_buf {
@@ -206,8 +205,6 @@ static int mhi_uci_release(struct inode *inode, struct file *file)
 			MSG_LOG("Node is deleted, freeing dev node\n");
 			mutex_unlock(&uci_dev->mutex);
 			mutex_destroy(&uci_dev->mutex);
-			mutex_destroy(&uci_dev->dl_chan.chan_lock);
-			mutex_destroy(&uci_dev->ul_chan.chan_lock);
 			clear_bit(MINOR(uci_dev->devt), uci_minors);
 			kfree(uci_dev);
 			return 0;
@@ -277,14 +274,11 @@ static ssize_t mhi_uci_write(struct file *file,
 	if (!buf || !count)
 		return -EINVAL;
 
-	mutex_lock(&uci_chan->chan_lock);
-
 	/* confirm channel is active */
 	spin_lock_bh(&uci_chan->lock);
 	if (!uci_dev->enabled) {
 		spin_unlock_bh(&uci_chan->lock);
-		ret = -ERESTARTSYS;
-		goto err_mtx_unlock;
+		return -ERESTARTSYS;
 	}
 
 	MSG_VERB("Enter: to xfer:%lu bytes\n", count);
@@ -304,22 +298,20 @@ static ssize_t mhi_uci_write(struct file *file,
 
 		if (ret == -ERESTARTSYS || !uci_dev->enabled) {
 			MSG_LOG("Exit signal caught for node or not enabled\n");
-			ret = -ERESTARTSYS;
-			goto err_mtx_unlock;
+			return -ERESTARTSYS;
 		}
 
 		xfer_size = min_t(size_t, count, uci_dev->mtu);
 		kbuf = kmalloc(xfer_size, GFP_KERNEL);
 		if (!kbuf) {
 			MSG_ERR("Failed to allocate memory %lu\n", xfer_size);
-			ret = -ENOMEM;
-			goto err_mtx_unlock;
+			return -ENOMEM;
 		}
 
 		ret = copy_from_user(kbuf, buf, xfer_size);
 		if (unlikely(ret)) {
 			kfree(kbuf);
-			goto err_mtx_unlock;
+			return ret;
 		}
 
 		spin_lock_bh(&uci_chan->lock);
@@ -347,15 +339,12 @@ static ssize_t mhi_uci_write(struct file *file,
 	}
 
 	spin_unlock_bh(&uci_chan->lock);
-	mutex_unlock(&uci_chan->chan_lock);
 	MSG_VERB("Exit: Number of bytes xferred:%lu\n", bytes_xfered);
 
 	return bytes_xfered;
 
 sys_interrupt:
 	spin_unlock_bh(&uci_chan->lock);
-err_mtx_unlock:
-	mutex_unlock(&uci_chan->chan_lock);
 
 	return ret;
 }
@@ -378,14 +367,11 @@ static ssize_t mhi_uci_read(struct file *file,
 
 	MSG_VERB("Client provided buf len:%lu\n", count);
 
-	mutex_lock(&uci_chan->chan_lock);
-
 	/* confirm channel is active */
 	spin_lock_bh(&uci_chan->lock);
 	if (!uci_dev->enabled) {
 		spin_unlock_bh(&uci_chan->lock);
-		ret = -ERESTARTSYS;
-		goto err_mtx_unlock;
+		return -ERESTARTSYS;
 	}
 
 	/* No data available to read, wait */
@@ -398,8 +384,7 @@ static ssize_t mhi_uci_read(struct file *file,
 				 !list_empty(&uci_chan->pending)));
 		if (ret == -ERESTARTSYS) {
 			MSG_LOG("Exit signal caught for node\n");
-			ret = -ERESTARTSYS;
-			goto err_mtx_unlock;
+			return -ERESTARTSYS;
 		}
 
 		spin_lock_bh(&uci_chan->lock);
@@ -433,7 +418,7 @@ static ssize_t mhi_uci_read(struct file *file,
 	ptr = uci_buf->data + (uci_buf->len - uci_chan->rx_size);
 	ret = copy_to_user(buf, ptr, to_copy);
 	if (ret)
-		goto err_mtx_unlock;
+		return ret;
 
 	MSG_VERB("Copied %lu of %lu bytes\n", to_copy, uci_chan->rx_size);
 	uci_chan->rx_size -= to_copy;
@@ -460,14 +445,12 @@ static ssize_t mhi_uci_read(struct file *file,
 	}
 
 	MSG_VERB("Returning %lu bytes\n", to_copy);
-	mutex_unlock(&uci_chan->chan_lock);
 
 	return to_copy;
 
 read_error:
 	spin_unlock_bh(&uci_chan->lock);
-err_mtx_unlock:
-	mutex_unlock(&uci_chan->chan_lock);
+
 	return ret;
 }
 
@@ -574,8 +557,6 @@ static void mhi_uci_remove(struct mhi_device *mhi_dev)
 	if (!uci_dev->ref_count) {
 		mutex_unlock(&uci_dev->mutex);
 		mutex_destroy(&uci_dev->mutex);
-		mutex_destroy(&uci_dev->dl_chan.chan_lock);
-		mutex_destroy(&uci_dev->ul_chan.chan_lock);
 		clear_bit(MINOR(uci_dev->devt), uci_minors);
 		kfree(uci_dev);
 		mutex_unlock(&mhi_uci_drv.lock);
@@ -634,7 +615,6 @@ static int mhi_uci_probe(struct mhi_device *mhi_dev,
 		struct uci_chan *uci_chan = (dir) ?
 			&uci_dev->ul_chan : &uci_dev->dl_chan;
 		spin_lock_init(&uci_chan->lock);
-		mutex_init(&uci_chan->chan_lock);
 		init_waitqueue_head(&uci_chan->wq);
 		INIT_LIST_HEAD(&uci_chan->pending);
 	}

@@ -1553,14 +1553,13 @@ void mhi_ev_task(unsigned long data)
 {
 	struct mhi_event *mhi_event = (struct mhi_event *)data;
 	struct mhi_controller *mhi_cntrl = mhi_event->mhi_cntrl;
-	unsigned long flags;
 
 	MHI_VERB("Enter for ev_index:%d\n", mhi_event->er_index);
 
 	/* process all pending events */
-	spin_lock_irqsave(&mhi_event->lock, flags);
+	spin_lock_bh(&mhi_event->lock);
 	mhi_event->process_event(mhi_cntrl, mhi_event, U32_MAX);
-	spin_unlock_irqrestore(&mhi_event->lock, flags);
+	spin_unlock_bh(&mhi_event->lock);
 }
 
 void mhi_ctrl_ev_task(unsigned long data)
@@ -1718,18 +1717,16 @@ irqreturn_t mhi_intvec_handlr(int irq_number, void *dev)
 
 	struct mhi_controller *mhi_cntrl = dev;
 	u32 in_reset = -1;
-	int ret = 0;
 
 	/* wake up any events waiting for state change */
 	MHI_VERB("Enter\n");
 	if (unlikely(mhi_cntrl->initiate_mhi_reset)) {
-		ret = mhi_read_reg_field(mhi_cntrl, mhi_cntrl->regs, MHICTRL,
+		mhi_read_reg_field(mhi_cntrl, mhi_cntrl->regs, MHICTRL,
 			MHICTRL_RESET_MASK, MHICTRL_RESET_SHIFT, &in_reset);
-
 		mhi_cntrl->initiate_mhi_reset = !!in_reset;
 	}
 	wake_up_all(&mhi_cntrl->state_event);
-	MHI_VERB("Exit: ret %d\n", ret);
+	MHI_VERB("Exit\n");
 
 	if (MHI_IN_MISSION_MODE(mhi_cntrl->ee))
 		queue_work(mhi_cntrl->wq, &mhi_cntrl->special_work);
@@ -2638,8 +2635,7 @@ int mhi_get_remote_time_sync(struct mhi_device *mhi_dev,
 	local_irq_disable();
 
 	*t_host = mhi_cntrl->time_get(mhi_cntrl, mhi_cntrl->priv_data);
-	*t_dev = (u64)readl_relaxed_no_log(mhi_tsync->time_reg_hi) << 32 |
-			readl_relaxed_no_log(mhi_tsync->time_reg_lo);
+	*t_dev = readq_relaxed_no_log(mhi_tsync->time_reg);
 
 	local_irq_enable();
 	preempt_enable();
